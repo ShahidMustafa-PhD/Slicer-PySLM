@@ -1,14 +1,14 @@
 """
-viewport_manager.py  --  Presentation Layer  (Cura-style 3D viewport)
-=====================================================================
+viewport_manager.py  --  Presentation Layer  (Cura 5.x exact viewport)
+======================================================================
 
 Bridges PyVista (off-screen VTK renderer) with Dear PyGui
 (dynamic texture).  Provides:
 
-* Gradient dark background (top-to-bottom, Cura-like)
-* Build plate cylinder with translucent metallic appearance
-* Fine reference grid on the Z = 0 plane
-* Axis orientation arrows
+* Light gray background (Cura viewport_background #FAFAFA)
+* Build plate with Cura buildplate color (#F4F4F4)
+* Reference grid (Cura buildplate_grid #B4B4B4 / minor #E4E4E4)
+* Axis orientation arrows (Cura x_axis/y_axis/z_axis colors)
 * Ambient + key + fill three-point lighting
 * Orbit / Pan / Zoom via mouse
 * Object XY-plane dragging
@@ -30,18 +30,17 @@ from src.application.scene_manager import SceneManager, SceneObject
 
 
 # =========================================================================
-#  Visual constants  (Cura-inspired darker palette)
+#  Visual constants  (Cura cura-light/theme.json exact values)
 # =========================================================================
-_BG_TOP       = (0.13, 0.13, 0.16)     # dark blue-grey top
-_BG_BOT       = (0.08, 0.08, 0.10)     # near-black bottom
+_BG_COLOR     = (0.980, 0.980, 0.980)   # viewport_background [250,250,250]
 
-_PLATE_COLOR  = "#484848"               # steel grey
-_PLATE_EDGE   = "#555555"
-_GRID_COLOR   = "#3A3A3A"
+_PLATE_COLOR  = "#F4F4F4"               # buildplate [244,244,244]
+_PLATE_EDGE   = "#B4B4B4"               # buildplate_grid
+_GRID_COLOR   = "#E4E4E4"               # buildplate_grid_minor
 
-_MESH_COLOR   = "#7EC8E3"               # Cura light-blue
-_SELECTED_CLR = "#FF9F1C"               # warm orange highlight
-_GHOST_CLR    = "#555555"               # dimmed / unselected hint
+_MESH_COLOR   = "#A0D8EF"               # Cura-style light blue (default object)
+_SELECTED_CLR = "#3282FF"               # model_selection_outline [50,130,255]
+_GHOST_CLR    = "#C0C0C0"               # unselected hint
 
 
 class ViewportManager:
@@ -69,7 +68,7 @@ class ViewportManager:
             lighting="three lights",
         )
         self.plotter.set_background(
-            color=_BG_BOT, top=_BG_TOP,
+            color=_BG_COLOR, top=_BG_COLOR,
         )
 
         # Camera defaults (isometric-ish, looking at origin)
@@ -168,13 +167,14 @@ class ViewportManager:
         )
 
     def _add_axes(self) -> None:
-        """Small XYZ arrows near origin (Cura-style orientation hint)."""
+        """Small XYZ arrows near origin (Cura axis colours)."""
         length = self.scene.build_plate.radius * 0.25
         origin = np.array([-self.scene.build_plate.radius * 0.85,
                            -self.scene.build_plate.radius * 0.85, 0.5])
+        # Cura axis colours: x_axis=[218,30,40], y_axis=[25,110,240], z_axis=[36,162,73]
         for axis, color in zip(
             [np.array([1, 0, 0]), np.array([0, 1, 0]), np.array([0, 0, 1])],
-            ["red", "green", "blue"],
+            ["#DA1E28", "#196EF0", "#24A249"],
         ):
             arrow = pv.Arrow(
                 start=origin, direction=axis,
@@ -199,7 +199,7 @@ class ViewportManager:
             if obj.selected:
                 self.plotter.add_mesh(
                     pv_mesh, color=_SELECTED_CLR,
-                    show_edges=True, edge_color="#CC7700",
+                    show_edges=True, edge_color="#196EF0",
                     opacity=1.0, smooth_shading=True,
                     name=obj.uid,
                 )

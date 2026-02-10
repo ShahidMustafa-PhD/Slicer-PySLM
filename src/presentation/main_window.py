@@ -1,27 +1,30 @@
 """
-main_window.py  --  Presentation Layer  (Cura 5.x-inspired)
-=============================================================
+main_window.py  --  Presentation Layer  (Exact Cura 5.x replica)
+==================================================================
 
-Layout (mirrors Ultimaker Cura):
+Layout mirrors Ultimaker Cura (from Cura.qml / MainWindowHeader.qml):
+
 +------------------------------------------------------------------+
-|  [Logo]   Machine v  |  Material v  |  Profile v      [?] [=]   |   <- Header Bar
-+---+----------------------------------------------------------+---+
-| T |                                                          | S |
-| O |                                                          | E |
-| O |              3D  VIEWPORT  (PyVista)                     | T |
-| L |                                                          | T |
-| B |                                                          | I |
-| A |                                                          | N |
-| R |                                                          | G |
-|   |                                                          | S |
-+---+----------------------------------------------------------+---+
-|        Status Bar  .  objects . triangles . build plate          |
+|  File  Edit  View  Settings  Extensions  Preferences  Help       |  <- ApplicationMenu
++------------------------------------------------------------------+
+| [Logo] PySLM  |  PREPARE  PREVIEW  MONITOR  |  Marketplace  [?] |  <- MainWindowHeader (navy)
++---+------------------------------------------------------+-------+
+| T |                                                      | Print |
+| O |                                                      | Setup |
+| O |               3D  VIEWPORT  (PyVista)                |       |
+| L |               viewport_background #fafafa            | [Rec] |
+| B |                                                      | [Cus] |
+| A |                                                      |       |
+| R |  [JobSpecs]                                          | Params|
+|   |  [Front][Top][Left][Right][Home]   [ActionPanel]     | Slice |
++---+------------------------------------------------------+-------+
+|  Status bar   ·  objects  ·  build plate                         |
 +------------------------------------------------------------------+
 
-Left Toolbar : Open / Move / Scale / Rotate / Mirror / Dup / Del
-Right Panel  : Collapsible sections for Object Info, Transform,
-               Process Parameters, Advanced, Slice button
-Central      : PyVista off-screen rendered into DPG dynamic texture
+Toolbar         : Move / Scale / Rotate / Mirror / Per-object / Support
+PrintSetupSelector : Profile selector, Recommended/Custom, settings tree
+ActionPanel     : "Slice" blue button with progress and estimates
+ViewOrientationControls : Front / Top / Left / Right / Home camera presets
 """
 from __future__ import annotations
 
@@ -41,17 +44,27 @@ from src.presentation.viewport_manager import ViewportManager
 from src.presentation.theme import (
     C, Layout,
     apply_cura_theme,
-    create_cta_button_theme,
+    create_primary_button_theme,
+    create_secondary_button_theme,
     create_danger_button_theme,
     create_flat_button_theme,
+    create_toolbar_active_theme,
     create_panel_header_theme,
+    create_header_bar_theme,
+    create_stage_active_theme,
+    create_stage_inactive_theme,
+    create_view_btn_theme,
+    create_action_panel_theme,
     create_status_bar_theme,
+    create_viewport_area_theme,
+    create_toolbar_panel_theme,
+    create_right_panel_theme,
 )
 
 
 class SlicerGUI:
     """
-    Cura-style presentation layer for the PySLM slicer.
+    Exact Cura 5.x presentation layer for the PySLM slicer.
     Receives all services via constructor (Dependency Injection).
     """
 
@@ -71,15 +84,26 @@ class SlicerGUI:
         )
 
         # Component themes (set after DPG context)
-        self._th_cta = None
+        self._th_primary = None
+        self._th_secondary = None
         self._th_danger = None
         self._th_flat = None
+        self._th_toolbar_active = None
         self._th_header = None
+        self._th_header_bar = None
+        self._th_stage_active = None
+        self._th_stage_inactive = None
+        self._th_view_btn = None
+        self._th_action_panel = None
         self._th_status = None
+        self._th_viewport_area = None
+        self._th_toolbar_panel = None
+        self._th_right_panel = None
 
         # GUI state
         self._slice_running = False
         self._active_tool = "move"
+        self._active_stage = "prepare"
         self._right_panel_visible = True
         self._slice_progress = 0.0
         self._current_dir = Path.home()
@@ -98,11 +122,21 @@ class SlicerGUI:
 
         # --- Theme & fonts ---
         apply_cura_theme()
-        self._th_cta    = create_cta_button_theme()
-        self._th_danger  = create_danger_button_theme()
-        self._th_flat    = create_flat_button_theme()
-        self._th_header  = create_panel_header_theme()
-        self._th_status  = create_status_bar_theme()
+        self._th_primary        = create_primary_button_theme()
+        self._th_secondary      = create_secondary_button_theme()
+        self._th_danger         = create_danger_button_theme()
+        self._th_flat           = create_flat_button_theme()
+        self._th_toolbar_active = create_toolbar_active_theme()
+        self._th_header         = create_panel_header_theme()
+        self._th_header_bar     = create_header_bar_theme()
+        self._th_stage_active   = create_stage_active_theme()
+        self._th_stage_inactive = create_stage_inactive_theme()
+        self._th_view_btn       = create_view_btn_theme()
+        self._th_action_panel   = create_action_panel_theme()
+        self._th_status         = create_status_bar_theme()
+        self._th_viewport_area  = create_viewport_area_theme()
+        self._th_toolbar_panel  = create_toolbar_panel_theme()
+        self._th_right_panel    = create_right_panel_theme()
 
         # --- Texture ---
         self.viewport.register_texture()
@@ -115,7 +149,7 @@ class SlicerGUI:
 
         # --- Viewport ---
         dpg.create_viewport(
-            title="PySLM Slicer",
+            title="PySLM Slicer  \u2014  Ultimaker Cura Style",
             width=Layout.WIN_W, height=Layout.WIN_H,
         )
         dpg.setup_dearpygui()
@@ -131,17 +165,17 @@ class SlicerGUI:
         dpg.destroy_context()
 
     # =====================================================================
-    #  Main window construction
+    #  Main window construction  (Cura.qml layout)
     # =====================================================================
     def _build_main_window(self) -> None:
         with dpg.window(tag="primary"):
-            # ---------- Menu bar (must be direct child of window) ----------
+            # ---------- ApplicationMenu (thin menu bar at very top) --------
             self._build_menu_bar()
-            
-            # ---------- Top header bar ----------
+
+            # ---------- MainWindowHeader (dark navy bar with stage tabs) ---
             self._build_header_bar()
 
-            # ---------- Body: toolbar | viewport | settings ----------
+            # ---------- Body: toolbar | viewport | print-setup ----------
             with dpg.group(horizontal=True, tag="body_group"):
                 self._build_left_toolbar()
                 self._build_viewport_area()
@@ -151,139 +185,269 @@ class SlicerGUI:
             self._build_status_bar()
 
     # -----------------------------------------------------------------
-    #  MENU BAR (must be direct child of window)
+    #  APPLICATION MENU  (Cura ApplicationMenu.qml)
     # -----------------------------------------------------------------
     def _build_menu_bar(self) -> None:
         with dpg.menu_bar(tag="main_menu"):
             with dpg.menu(label="File"):
                 dpg.add_menu_item(
-                    label="Open Model(s)...    Ctrl+O",
+                    label="Open File(s)...    Ctrl+O",
                     callback=self._cmd_import,
                 )
                 dpg.add_menu_item(label="Open Recent", enabled=False)
                 dpg.add_separator()
-                dpg.add_menu_item(label="Save Build File...", callback=self._cmd_save_build)
+                dpg.add_menu_item(label="Save Project...", callback=self._cmd_save_build)
+                dpg.add_menu_item(label="Save As...", enabled=False)
                 dpg.add_separator()
-                dpg.add_menu_item(label="Exit", callback=lambda: dpg.stop_dearpygui())
+                dpg.add_menu_item(label="Quit", callback=lambda: dpg.stop_dearpygui())
 
             with dpg.menu(label="Edit"):
                 dpg.add_menu_item(label="Select All          Ctrl+A", callback=self._cmd_select_all)
-                dpg.add_menu_item(label="Deselect All",                callback=self._cmd_deselect)
+                dpg.add_menu_item(label="Clear Selection",            callback=self._cmd_deselect)
                 dpg.add_separator()
                 dpg.add_menu_item(label="Duplicate           Ctrl+D", callback=self._cmd_duplicate)
-                dpg.add_menu_item(label="Delete              Del",     callback=self._cmd_delete)
+                dpg.add_menu_item(label="Delete              Del",    callback=self._cmd_delete)
                 dpg.add_separator()
-                dpg.add_menu_item(label="Clear Build Plate",           callback=self._cmd_clear_plate)
+                dpg.add_menu_item(label="Clear Build Plate",          callback=self._cmd_clear_plate)
 
             with dpg.menu(label="View"):
-                dpg.add_menu_item(label="Reset Camera        Home", callback=self._cmd_reset_camera)
-                dpg.add_menu_item(label="Fit All             F",    callback=self._cmd_fit_all)
+                dpg.add_menu_item(label="Home                Home",   callback=self._cmd_reset_camera)
+                dpg.add_menu_item(label="Front",                      callback=lambda: self._set_camera_view("front"))
+                dpg.add_menu_item(label="Top",                        callback=lambda: self._set_camera_view("top"))
+                dpg.add_menu_item(label="Left",                       callback=lambda: self._set_camera_view("left"))
+                dpg.add_menu_item(label="Right",                      callback=lambda: self._set_camera_view("right"))
                 dpg.add_separator()
-                dpg.add_menu_item(label="Toggle Settings Panel",    callback=self._cmd_toggle_panel)
+                dpg.add_menu_item(label="Toggle Print Setup",         callback=self._cmd_toggle_panel)
 
             with dpg.menu(label="Settings"):
-                dpg.add_menu_item(label="Build Plate...", callback=self._cmd_show_plate_settings)
-                dpg.add_menu_item(label="About",          callback=self._cmd_about)
+                dpg.add_menu_item(label="Printer...",     callback=self._cmd_show_plate_settings)
+                dpg.add_menu_item(label="Materials...",   enabled=False)
+                dpg.add_menu_item(label="Profiles...",    enabled=False)
+
+            with dpg.menu(label="Extensions"):
+                dpg.add_menu_item(label="Post Processing...", enabled=False)
+                dpg.add_menu_item(label="Toolpath Generator", enabled=False)
+
+            with dpg.menu(label="Preferences"):
+                dpg.add_menu_item(label="General",      enabled=False)
+                dpg.add_menu_item(label="Theme",        enabled=False)
+
+            with dpg.menu(label="Help"):
+                dpg.add_menu_item(label="About PySLM Slicer", callback=self._cmd_about)
+                dpg.add_menu_item(label="Show Release Notes",  enabled=False)
 
     # -----------------------------------------------------------------
-    #  HEADER BAR (combos and title)
+    #  MAIN WINDOW HEADER  (Cura MainWindowHeader.qml)
+    #  Dark navy bar: [Logo] | Stage Tabs | Marketplace + Account
     # -----------------------------------------------------------------
     def _build_header_bar(self) -> None:
-        with dpg.child_window(
+        hdr = dpg.add_child_window(
             height=Layout.HEADER_H, border=False,
             tag="header_bar", no_scrollbar=True,
-        ):
-            with dpg.group(horizontal=True):
-                # Logo / title
-                dpg.add_text("  PySLM Slicer", color=C.ACCENT)
-                dpg.add_spacer(width=30)
+        )
+        dpg.bind_item_theme(hdr, self._th_header_bar)
 
-                # Machine selector
-                dpg.add_combo(
-                    items=["EOS M290 (120mm)", "SLM 280 (280mm)", "Custom"],
-                    default_value="EOS M290 (120mm)",
-                    tag="machine_combo", width=180,
-                    callback=self._on_machine_change,
-                )
-                dpg.add_spacer(width=16)
+        with dpg.group(horizontal=True, parent=hdr):
+            # ---- Logo / branding (left) ----
+            dpg.add_spacer(width=10)
+            dpg.add_text("PySLM", color=(255, 255, 255, 255))
+            dpg.add_spacer(width=6)
+            dpg.add_text("Slicer", color=(180, 180, 220, 255))
 
-                # Material profile
-                dpg.add_combo(
-                    items=["Ti-6Al-4V", "316L Stainless", "AlSi10Mg", "IN718", "Custom"],
-                    default_value="Ti-6Al-4V",
-                    tag="material_combo", width=160,
-                )
-                dpg.add_spacer(width=16)
+            dpg.add_spacer(width=60)
 
-                # Quality profile
-                dpg.add_combo(
-                    items=["Fine (20 um)", "Normal (30 um)", "Draft (50 um)", "Custom"],
-                    default_value="Normal (30 um)",
-                    tag="profile_combo", width=160,
-                    callback=self._on_profile_change,
-                )
+            # ---- Stage tabs (center): PREPARE / PREVIEW / MONITOR ----
+            self._stage_btn(
+                "stage_prepare", "PREPARE",
+                lambda: self._set_stage("prepare"),
+            )
+            dpg.add_spacer(width=4)
+            self._stage_btn(
+                "stage_preview", "PREVIEW",
+                lambda: self._set_stage("preview"),
+            )
+            dpg.add_spacer(width=4)
+            self._stage_btn(
+                "stage_monitor", "MONITOR",
+                lambda: self._set_stage("monitor"),
+            )
+
+            dpg.add_spacer(width=80)
+
+            # ---- Machine selector (header combo) ----
+            dpg.add_combo(
+                items=["EOS M290 (120mm)", "SLM 280 (280mm)", "Custom"],
+                default_value="EOS M290 (120mm)",
+                tag="machine_combo", width=180,
+                callback=self._on_machine_change,
+            )
+
+            dpg.add_spacer(width=100)
+
+            # ---- Right side: Marketplace + About ----
+            mkt = dpg.add_button(label="Marketplace", tag="marketplace_btn")
+            dpg.bind_item_theme(mkt, self._th_stage_inactive)
+            dpg.add_spacer(width=8)
+            abt = dpg.add_button(label="?", tag="about_header_btn", callback=self._cmd_about)
+            dpg.bind_item_theme(abt, self._th_stage_inactive)
+
+        # Set initial active stage
+        self._set_stage("prepare")
+
+    def _stage_btn(self, tag, label, callback):
+        """Create a stage tab button in the header."""
+        btn = dpg.add_button(label=f"  {label}  ", tag=tag, callback=callback)
+        dpg.bind_item_theme(btn, self._th_stage_inactive)
 
     # -----------------------------------------------------------------
-    #  LEFT TOOLBAR  (Cura icon strip)
+    #  LEFT TOOLBAR  (Cura Toolbar.qml)
+    #  Rounded white rectangle with tool icon buttons
     # -----------------------------------------------------------------
     def _build_left_toolbar(self) -> None:
-        with dpg.child_window(
-            width=Layout.LEFT_TOOLBAR_W, border=False,
+        tb = dpg.add_child_window(
+            width=Layout.LEFT_TOOLBAR_W, border=True,
             tag="left_toolbar", no_scrollbar=True,
-        ):
+        )
+        dpg.bind_item_theme(tb, self._th_toolbar_panel)
+
+        with dpg.group(parent=tb):
             dpg.add_spacer(height=8)
-            self._toolbar_btn("open_btn",  "O", "Open File (Ctrl+O)", self._cmd_import)
-            dpg.add_spacer(height=4)
-            dpg.add_separator()
-            dpg.add_spacer(height=4)
 
-            self._toolbar_btn("move_btn",  "+", "Move (G)",     lambda: self._set_tool("move"))
-            self._toolbar_btn("scale_btn", "S", "Scale (S)",    lambda: self._set_tool("scale"))
-            self._toolbar_btn("rot_btn",   "R", "Rotate (R)",   lambda: self._set_tool("rotate"))
-            self._toolbar_btn("mir_btn",   "M", "Mirror",       lambda: self._set_tool("mirror"))
+            self._toolbar_btn("tool_move",   "\u271a", "Move (G)",     lambda: self._set_tool("move"))
+            self._toolbar_btn("tool_scale",  "S",      "Scale (S)",    lambda: self._set_tool("scale"))
+            self._toolbar_btn("tool_rotate", "R",      "Rotate (R)",   lambda: self._set_tool("rotate"))
+            self._toolbar_btn("tool_mirror", "M",      "Mirror",       lambda: self._set_tool("mirror"))
 
             dpg.add_spacer(height=4)
             dpg.add_separator()
             dpg.add_spacer(height=4)
 
-            self._toolbar_btn("dup_btn", "D", "Duplicate (Ctrl+D)", self._cmd_duplicate)
-            self._toolbar_btn("del_btn", "X", "Delete (Del)",       self._cmd_delete, danger=True)
+            self._toolbar_btn("tool_support",  "\u25a6", "Support Blocker",     lambda: self._set_tool("support"))
+            self._toolbar_btn("tool_perobject", "\u2630", "Per Model Settings", lambda: self._set_tool("perobject"))
 
-            dpg.add_spacer(height=4)
-            dpg.add_separator()
-            dpg.add_spacer(height=4)
-
-            self._toolbar_btn("fit_btn", "#", "Fit View (F)", self._cmd_fit_all)
-
-    def _toolbar_btn(self, tag, label, tooltip_text, cb, danger=False):
+    def _toolbar_btn(self, tag, label, tooltip_text, cb):
         btn = dpg.add_button(label=f" {label} ", tag=tag, width=36, height=36, callback=cb)
-        dpg.bind_item_theme(btn, self._th_danger if danger else self._th_flat)
+        dpg.bind_item_theme(btn, self._th_flat)
         with dpg.tooltip(btn):
-            dpg.add_text(tooltip_text)
+            dpg.add_text(tooltip_text, color=C.TOOLTIP_TEXT)
 
     # -----------------------------------------------------------------
-    #  CENTRAL VIEWPORT
+    #  CENTRAL VIEWPORT  (Cura contentItem area)
+    #  Contains: 3D image + overlays for JobSpecs, ViewOrientationControls, ActionPanel
     # -----------------------------------------------------------------
     def _build_viewport_area(self) -> None:
-        with dpg.child_window(tag="viewport_area", border=False):
+        vp = dpg.add_child_window(tag="viewport_area", border=False)
+        dpg.bind_item_theme(vp, self._th_viewport_area)
+
+        with dpg.group(parent=vp):
+            # 3D viewport image
             dpg.add_image(
                 self.viewport.texture_tag,
                 tag="viewport_image",
             )
+
             dpg.add_spacer(height=4)
+
+            # Bottom overlay row: ViewOrientation (left) + ActionPanel (right)
             with dpg.group(horizontal=True):
-                dpg.add_text("Objects: 0",   tag="vp_obj_count", color=C.TEXT_SECONDARY)
-                dpg.add_spacer(width=20)
-                dpg.add_text("Triangles: 0", tag="vp_tri_count", color=C.TEXT_SECONDARY)
+                # ---- Bottom-left: Job specs + View orientation controls ----
+                with dpg.group():
+                    # Job specs (filename, face count)
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("", tag="job_filename", color=C.TEXT_LIGHTER)
+                        dpg.add_spacer(width=12)
+                        dpg.add_text("", tag="job_faces", color=C.TEXT_LIGHTER)
+
+                    dpg.add_spacer(height=2)
+
+                    # ViewOrientationControls (Cura ViewOrientationControls.qml)
+                    with dpg.group(horizontal=True, tag="view_controls"):
+                        for view_name in ["Front", "Top", "Left", "Right", "Home"]:
+                            btn = dpg.add_button(
+                                label=f" {view_name} ",
+                                tag=f"view_{view_name.lower()}",
+                                callback=self._on_view_btn,
+                                user_data=view_name.lower(),
+                            )
+                            dpg.bind_item_theme(btn, self._th_view_btn)
+
+                dpg.add_spacer(width=40)
+
+                # ---- Bottom-right: ActionPanel (Cura ActionPanelWidget.qml) ----
+                ap = dpg.add_child_window(
+                    width=Layout.ACTION_PANEL_W, height=100,
+                    border=True, no_scrollbar=True,
+                    tag="action_panel_area",
+                )
+                dpg.bind_item_theme(ap, self._th_action_panel)
+                with dpg.group(parent=ap):
+                    dpg.add_spacer(height=4)
+                    dpg.add_text("", tag="vp_obj_count", color=C.TEXT_MEDIUM)
+                    dpg.add_text("", tag="vp_tri_count", color=C.TEXT_MEDIUM)
+                    dpg.add_spacer(height=4)
+                    dpg.add_progress_bar(
+                        default_value=0.0, tag="slice_progress",
+                        overlay="", width=-1,
+                    )
+                    dpg.add_spacer(height=4)
+                    slice_btn = dpg.add_button(
+                        label="     Slice     ", tag="slice_btn",
+                        width=-1, height=36, callback=self._cmd_slice,
+                    )
+                    dpg.bind_item_theme(slice_btn, self._th_primary)
 
     # -----------------------------------------------------------------
-    #  RIGHT SETTINGS PANEL
+    #  RIGHT PANEL  (Cura PrintSetupSelector.qml)
+    #  Profile selector, Recommended/Custom tabs, parameter sections
     # -----------------------------------------------------------------
     def _build_right_panel(self) -> None:
-        with dpg.child_window(
+        rp = dpg.add_child_window(
             width=Layout.RIGHT_PANEL_W, tag="right_panel",
             border=True, no_scrollbar=False,
-        ):
+        )
+        dpg.bind_item_theme(rp, self._th_right_panel)
+
+        with dpg.group(parent=rp):
+            # ---- Print Setup header ----
+            dpg.add_text("Print Setup", color=C.TEXT_DEFAULT)
+            dpg.add_separator()
+            dpg.add_spacer(height=4)
+
+            # ---- Profile / Quality selector ----
+            dpg.add_text("Profile", color=C.TEXT_MEDIUM)
+            dpg.add_combo(
+                items=["Fine (20 \u00b5m)", "Normal (30 \u00b5m)", "Draft (50 \u00b5m)", "Custom"],
+                default_value="Normal (30 \u00b5m)",
+                tag="profile_combo", width=-1,
+                callback=self._on_profile_change,
+            )
+            dpg.add_spacer(height=4)
+
+            # ---- Material selector ----
+            dpg.add_text("Material", color=C.TEXT_MEDIUM)
+            dpg.add_combo(
+                items=["Ti-6Al-4V", "316L Stainless", "AlSi10Mg", "IN718", "Custom"],
+                default_value="Ti-6Al-4V",
+                tag="material_combo", width=-1,
+            )
+            dpg.add_spacer(height=4)
+
+            # ---- Recommended / Custom toggle ----
+            with dpg.group(horizontal=True, tag="mode_toggle"):
+                rec_btn = dpg.add_button(
+                    label="Recommended", tag="mode_recommended",
+                    callback=self._cmd_mode_recommended, width=145,
+                )
+                dpg.bind_item_theme(rec_btn, self._th_primary)
+
+                cust_btn = dpg.add_button(
+                    label=" Custom ", tag="mode_custom",
+                    callback=self._cmd_mode_custom, width=145,
+                )
+                dpg.bind_item_theme(cust_btn, self._th_secondary)
+
+            dpg.add_spacer(height=8)
+
             # ---- Object Info ----
             hdr = dpg.add_collapsing_header(
                 label="  Object Info", default_open=True, tag="sec_obj_info",
@@ -291,21 +455,23 @@ class SlicerGUI:
             dpg.bind_item_theme(hdr, self._th_header)
             with dpg.group(parent=hdr):
                 dpg.add_listbox(
-                    items=[], num_items=5, tag="object_list",
+                    items=[], num_items=4, tag="object_list",
                     callback=self._on_object_list_select, width=-1,
                 )
                 with dpg.group(horizontal=True):
-                    dpg.add_button(label="Import",   width=95, callback=self._cmd_import)
-                    dpg.add_button(label="Duplicate", width=95, callback=self._cmd_duplicate)
-                    b_del = dpg.add_button(label="Delete", width=95, callback=self._cmd_delete)
-                    dpg.bind_item_theme(b_del, self._th_danger)
+                    imp_btn = dpg.add_button(label="Import", width=95, callback=self._cmd_import)
+                    dpg.bind_item_theme(imp_btn, self._th_secondary)
+                    dup_btn = dpg.add_button(label="Duplicate", width=95, callback=self._cmd_duplicate)
+                    dpg.bind_item_theme(dup_btn, self._th_secondary)
+                    del_btn = dpg.add_button(label="Delete", width=95, callback=self._cmd_delete)
+                    dpg.bind_item_theme(del_btn, self._th_danger)
                 dpg.add_spacer(height=4)
                 dpg.add_text(
-                    "", tag="info_text", color=C.TEXT_SECONDARY,
+                    "", tag="info_text", color=C.TEXT_MEDIUM,
                     wrap=Layout.RIGHT_PANEL_W - 30,
                 )
 
-            dpg.add_spacer(height=6)
+            dpg.add_spacer(height=4)
 
             # ---- Transform ----
             hdr2 = dpg.add_collapsing_header(
@@ -313,82 +479,83 @@ class SlicerGUI:
             )
             dpg.bind_item_theme(hdr2, self._th_header)
             with dpg.group(parent=hdr2):
-                dpg.add_text("Position (mm)", color=C.TEXT_SECONDARY)
+                dpg.add_text("Position (mm)", color=C.TEXT_MEDIUM)
                 dpg.add_input_floatx(
                     size=3, default_value=[0, 0, 0], tag="tf_pos",
                     callback=self._on_transform_change, on_enter=True, width=-1,
                 )
                 dpg.add_spacer(height=2)
-                dpg.add_text("Rotation (deg)", color=C.TEXT_SECONDARY)
+                dpg.add_text("Rotation (deg)", color=C.TEXT_MEDIUM)
                 dpg.add_input_floatx(
                     size=3, default_value=[0, 0, 0], tag="tf_rot",
                     callback=self._on_transform_change, on_enter=True, width=-1,
                 )
                 dpg.add_spacer(height=2)
-                dpg.add_text("Scale", color=C.TEXT_SECONDARY)
+                dpg.add_text("Scale", color=C.TEXT_MEDIUM)
                 dpg.add_input_floatx(
                     size=3, default_value=[1, 1, 1], tag="tf_scale",
                     callback=self._on_transform_change, on_enter=True, width=-1,
                 )
                 dpg.add_spacer(height=2)
-                dpg.add_button(
+                ctr_btn = dpg.add_button(
                     label="Center on Plate", width=-1,
                     callback=self._cmd_center_on_plate,
                 )
+                dpg.bind_item_theme(ctr_btn, self._th_secondary)
 
-            dpg.add_spacer(height=6)
+            dpg.add_spacer(height=4)
 
-            # ---- Process Parameters ----
+            # ---- Process Parameters (Quality / Shell / Infill-like) ----
             hdr3 = dpg.add_collapsing_header(
                 label="  Process Parameters", default_open=True, tag="sec_params",
             )
             dpg.bind_item_theme(hdr3, self._th_header)
             with dpg.group(parent=hdr3):
-                dpg.add_text("Layer Thickness (mm)", color=C.TEXT_SECONDARY)
+                dpg.add_text("Layer Thickness (mm)", color=C.TEXT_MEDIUM)
                 dpg.add_input_float(
                     default_value=0.030, tag="param_layer_thickness",
                     format="%.3f", step=0.005, width=-1,
                 )
                 dpg.add_spacer(height=2)
-                dpg.add_text("Laser Power (W)", color=C.TEXT_SECONDARY)
+                dpg.add_text("Laser Power (W)", color=C.TEXT_MEDIUM)
                 dpg.add_input_float(
                     default_value=200.0, tag="param_laser_power",
                     step=10, width=-1,
                 )
                 dpg.add_spacer(height=2)
-                dpg.add_text("Scan Speed (mm/s)", color=C.TEXT_SECONDARY)
+                dpg.add_text("Scan Speed (mm/s)", color=C.TEXT_MEDIUM)
                 dpg.add_input_float(
                     default_value=1000.0, tag="param_scan_speed",
                     step=50, width=-1,
                 )
                 dpg.add_spacer(height=2)
-                dpg.add_text("Hatch Spacing (mm)", color=C.TEXT_SECONDARY)
+                dpg.add_text("Hatch Spacing (mm)", color=C.TEXT_MEDIUM)
                 dpg.add_input_float(
                     default_value=0.10, tag="param_hatch_spacing",
                     format="%.3f", step=0.01, width=-1,
                 )
                 dpg.add_spacer(height=2)
-                dpg.add_text("Hatch Angle Increment (deg)", color=C.TEXT_SECONDARY)
+                dpg.add_text("Hatch Angle Increment (deg)", color=C.TEXT_MEDIUM)
                 dpg.add_input_float(
                     default_value=67.0, tag="param_hatch_angle",
                     step=1, width=-1,
                 )
 
-            dpg.add_spacer(height=6)
+            dpg.add_spacer(height=4)
 
-            # ---- Advanced (collapsed) ----
+            # ---- Advanced (collapsed by default) ----
             hdr4 = dpg.add_collapsing_header(
                 label="  Advanced", default_open=False, tag="sec_advanced",
             )
             dpg.bind_item_theme(hdr4, self._th_header)
             with dpg.group(parent=hdr4):
-                dpg.add_text("Contour Count", color=C.TEXT_SECONDARY)
+                dpg.add_text("Contour Count", color=C.TEXT_MEDIUM)
                 dpg.add_input_int(
                     default_value=1, tag="param_contour_count",
                     width=-1, min_value=0, max_value=10,
                 )
                 dpg.add_spacer(height=2)
-                dpg.add_text("Contour Offset (mm)", color=C.TEXT_SECONDARY)
+                dpg.add_text("Contour Offset (mm)", color=C.TEXT_MEDIUM)
                 dpg.add_input_float(
                     default_value=0.05, tag="param_contour_offset",
                     format="%.3f", step=0.01, width=-1,
@@ -399,7 +566,7 @@ class SlicerGUI:
                     default_value=False,
                 )
                 dpg.add_spacer(height=2)
-                dpg.add_text("Island Size (mm)", color=C.TEXT_SECONDARY)
+                dpg.add_text("Island Size (mm)", color=C.TEXT_MEDIUM)
                 dpg.add_input_float(
                     default_value=5.0, tag="param_island_size",
                     step=1, width=-1,
@@ -407,26 +574,14 @@ class SlicerGUI:
 
             dpg.add_spacer(height=10)
 
-            # ---- Progress bar & Slice button ----
-            dpg.add_progress_bar(
-                default_value=0.0, tag="slice_progress",
-                overlay="", width=-1,
-            )
-            dpg.add_spacer(height=4)
-            slice_btn = dpg.add_button(
-                label="    Slice Now    ", tag="slice_btn",
-                width=-1, height=44, callback=self._cmd_slice,
-            )
-            dpg.bind_item_theme(slice_btn, self._th_cta)
-
-            dpg.add_spacer(height=6)
+            # ---- Slice summary text at bottom of panel ----
             dpg.add_text(
                 "", tag="slice_summary",
-                wrap=Layout.RIGHT_PANEL_W - 30, color=C.TEXT_SECONDARY,
+                wrap=Layout.RIGHT_PANEL_W - 30, color=C.TEXT_MEDIUM,
             )
 
     # -----------------------------------------------------------------
-    #  STATUS BAR
+    #  STATUS BAR  (Cura bottom overlay)
     # -----------------------------------------------------------------
     def _build_status_bar(self) -> None:
         sb = dpg.add_child_window(
@@ -435,10 +590,10 @@ class SlicerGUI:
         )
         dpg.bind_item_theme(sb, self._th_status)
         with dpg.group(horizontal=True, parent=sb):
-            dpg.add_text("Ready", tag="status_text", color=C.TEXT_SECONDARY)
+            dpg.add_text("Ready", tag="status_text", color=C.TEXT_LIGHTER)
 
     # -----------------------------------------------------------------
-    #  CUSTOM FILE DIALOG
+    #  CUSTOM FILE DIALOG  (Cura-styled light modal)
     # -----------------------------------------------------------------
     def _build_file_dialog(self) -> None:
         with dpg.window(
@@ -454,9 +609,12 @@ class SlicerGUI:
         ):
             dpg.add_separator()
             with dpg.group(horizontal=True):
-                dpg.add_button(label="⟵ Back", callback=lambda: self._navigate_history(-1))
-                dpg.add_button(label="Forward ⟶", callback=lambda: self._navigate_history(1))
-                dpg.add_button(label="↑ Up", callback=self._cmd_navigate_up)
+                back_btn = dpg.add_button(label="\u2190 Back", callback=lambda: self._navigate_history(-1))
+                dpg.bind_item_theme(back_btn, self._th_secondary)
+                fwd_btn = dpg.add_button(label="Forward \u2192", callback=lambda: self._navigate_history(1))
+                dpg.bind_item_theme(fwd_btn, self._th_secondary)
+                up_btn = dpg.add_button(label="\u2191 Up", callback=self._cmd_navigate_up)
+                dpg.bind_item_theme(up_btn, self._th_secondary)
                 dpg.add_input_text(
                     tag=self._file_dialog_path_tag,
                     width=520,
@@ -464,7 +622,8 @@ class SlicerGUI:
                     on_enter=True,
                     callback=self._cmd_enter_path,
                 )
-                dpg.add_button(label="Go", callback=self._cmd_enter_path)
+                go_btn = dpg.add_button(label="Go", callback=self._cmd_enter_path)
+                dpg.bind_item_theme(go_btn, self._th_primary)
             dpg.add_separator()
 
             with dpg.group(horizontal=True):
@@ -473,7 +632,7 @@ class SlicerGUI:
                     width=260, border=True, autosize_y=False, height=390,
                     tag="file_dialog_left", no_scrollbar=False,
                 ):
-                    dpg.add_text("Quick Access", color=C.TEXT_SECONDARY)
+                    dpg.add_text("Quick Access", color=C.TEXT_MEDIUM)
                     for label, path in self._quick_links():
                         btn = dpg.add_button(
                             label=f"{label}",
@@ -481,7 +640,7 @@ class SlicerGUI:
                             user_data=str(path),
                             tag=f"quick_{label.lower().replace(' ', '_')}",
                         )
-                        dpg.bind_item_theme(btn, self._th_cta)
+                        dpg.bind_item_theme(btn, self._th_secondary)
                     dpg.add_separator()
                     dpg.add_text("Folders", color=C.ACCENT)
                     with dpg.group(tag=self._file_dialog_dir_tag):
@@ -493,17 +652,18 @@ class SlicerGUI:
                     tag="file_dialog_right", no_scrollbar=False,
                 ):
                     dpg.add_text("Files", color=C.ACCENT)
-                    dpg.add_text("Click any file to import it into the build plate.", color=C.TEXT_SECONDARY)
+                    dpg.add_text("Click any file to import it into the build plate.", color=C.TEXT_MEDIUM)
                     dpg.add_separator()
                     with dpg.group(tag=self._file_dialog_file_tag):
                         pass
 
             dpg.add_separator()
             with dpg.group(horizontal=True):
-                dpg.add_text("Status:", color=C.TEXT_SECONDARY)
+                dpg.add_text("Status:", color=C.TEXT_MEDIUM)
                 dpg.add_text("Ready to browse", tag=self._file_dialog_status_tag)
                 dpg.add_spacer(width=34)
-                dpg.add_button(label="Close", callback=lambda: dpg.hide_item("file_dialog_win"))
+                close_btn = dpg.add_button(label="Close", callback=lambda: dpg.hide_item("file_dialog_win"))
+                dpg.bind_item_theme(close_btn, self._th_secondary)
 
     # =====================================================================
     #  Handlers
@@ -635,29 +795,42 @@ class SlicerGUI:
         dpg.configure_item("right_panel", show=self._right_panel_visible)
 
     def _cmd_save_build(self, sender=None, app_data=None) -> None:
-        self._set_status("Save Build File: not yet implemented")
+        self._set_status("Save Project: not yet implemented")
+
+    def _cmd_mode_recommended(self, sender=None, app_data=None) -> None:
+        """Switch to Recommended mode."""
+        dpg.bind_item_theme("mode_recommended", self._th_primary)
+        dpg.bind_item_theme("mode_custom", self._th_secondary)
+        self._set_status("Recommended mode")
+
+    def _cmd_mode_custom(self, sender=None, app_data=None) -> None:
+        """Switch to Custom mode (shows all settings)."""
+        dpg.bind_item_theme("mode_custom", self._th_primary)
+        dpg.bind_item_theme("mode_recommended", self._th_secondary)
+        self._set_status("Custom mode")
 
     def _cmd_show_plate_settings(self, sender=None, app_data=None) -> None:
         if dpg.does_item_exist("plate_popup"):
             dpg.delete_item("plate_popup")
         with dpg.window(
-            label="Build Plate Settings", modal=True,
+            label="Printer Settings", modal=True,
             tag="plate_popup", width=380, height=220,
         ):
-            dpg.add_text("Configure the build plate dimensions", color=C.TEXT_SECONDARY)
+            dpg.add_text("Configure the build plate dimensions", color=C.TEXT_MEDIUM)
             dpg.add_spacer(height=6)
-            dpg.add_text("Diameter (mm)", color=C.TEXT_SECONDARY)
+            dpg.add_text("Diameter (mm)", color=C.TEXT_MEDIUM)
             dpg.add_input_float(
                 default_value=self.scene.build_plate.diameter_mm,
                 tag="plate_dia", width=200,
             )
-            dpg.add_text("Height (mm)", color=C.TEXT_SECONDARY)
+            dpg.add_text("Height (mm)", color=C.TEXT_MEDIUM)
             dpg.add_input_float(
                 default_value=self.scene.build_plate.height_mm,
                 tag="plate_h", width=200,
             )
             dpg.add_spacer(height=8)
-            dpg.add_button(label="  Apply  ", callback=self._apply_plate_settings)
+            apply_btn = dpg.add_button(label="  Apply  ", callback=self._apply_plate_settings)
+            dpg.bind_item_theme(apply_btn, self._th_primary)
 
     def _apply_plate_settings(self, sender=None, app_data=None) -> None:
         self.scene.build_plate.diameter_mm = dpg.get_value("plate_dia")
@@ -671,38 +844,80 @@ class SlicerGUI:
             dpg.delete_item("about_popup")
         with dpg.window(
             label="About PySLM Slicer", modal=True,
-            tag="about_popup", width=420, height=220,
+            tag="about_popup", width=420, height=240,
         ):
             dpg.add_text("PySLM Industrial Slicer", color=C.ACCENT)
-            dpg.add_text("Version 0.1.0", color=C.TEXT_SECONDARY)
+            dpg.add_text("Version 0.1.0", color=C.TEXT_MEDIUM)
             dpg.add_spacer(height=6)
             dpg.add_text(
                 "Clean Architecture  |  DDD  |  PySLM Engine",
-                color=C.TEXT_SECONDARY,
+                color=C.TEXT_MEDIUM,
             )
             dpg.add_text(
                 "GUI: Dear PyGui  |  3D: PyVista (VTK)",
-                color=C.TEXT_SECONDARY,
+                color=C.TEXT_MEDIUM,
+            )
+            dpg.add_text(
+                "Theme: Ultimaker Cura 5.x Light",
+                color=C.TEXT_MEDIUM,
             )
             dpg.add_spacer(height=10)
-            dpg.add_button(
+            close_btn = dpg.add_button(
                 label="  Close  ",
                 callback=lambda: dpg.delete_item("about_popup"),
             )
+            dpg.bind_item_theme(close_btn, self._th_secondary)
 
-    # -- Tool selection --
+    # -- Stage selection (Cura PREPARE / PREVIEW / MONITOR) --
+    def _set_stage(self, stage: str) -> None:
+        self._active_stage = stage
+        for s in ["prepare", "preview", "monitor"]:
+            tag = f"stage_{s}"
+            if dpg.does_item_exist(tag):
+                dpg.bind_item_theme(
+                    tag,
+                    self._th_stage_active if s == stage else self._th_stage_inactive,
+                )
+        self._set_status(f"Stage: {stage.upper()}")
+
+    # -- Tool selection (Cura Toolbar.qml) --
     def _set_tool(self, tool: str) -> None:
         self._active_tool = tool
         self._set_status(f"Active tool: {tool.capitalize()}")
         mapping = {
-            "move": "move_btn", "scale": "scale_btn",
-            "rotate": "rot_btn", "mirror": "mir_btn",
+            "move": "tool_move", "scale": "tool_scale",
+            "rotate": "tool_rotate", "mirror": "tool_mirror",
+            "support": "tool_support", "perobject": "tool_perobject",
         }
         for name, tag in mapping.items():
             if dpg.does_item_exist(tag):
                 dpg.bind_item_theme(
-                    tag, self._th_cta if name == tool else self._th_flat,
+                    tag, self._th_toolbar_active if name == tool else self._th_flat,
                 )
+
+    # -- Camera view presets (Cura ViewOrientationControls.qml) --
+    def _on_view_btn(self, sender, app_data, user_data) -> None:
+        self._set_camera_view(user_data)
+
+    def _set_camera_view(self, view: str) -> None:
+        cam = self.viewport.plotter.camera
+        r = self.scene.build_plate.radius
+        dist = r * 3
+        fp = (0, 0, r * 0.15)
+
+        presets = {
+            "front": [(0, -dist, fp[2]),  fp, (0, 0, 1)],
+            "top":   [(0, 0, dist),       fp, (0, -1, 0)],
+            "left":  [(-dist, 0, fp[2]),  fp, (0, 0, 1)],
+            "right": [(dist, 0, fp[2]),   fp, (0, 0, 1)],
+            "home":  [(dist*0.7, -dist*0.7, dist*0.6), fp, (0, 0, 1)],
+        }
+        if view in presets:
+            pos, focal, up = presets[view]
+            self.viewport.plotter.camera_position = [pos, focal, up]
+            self.viewport.plotter.reset_camera_clipping_range()
+            self.viewport.refresh()
+            self._set_status(f"View: {view.capitalize()}")
 
     # -- Header combo callbacks --
     def _on_machine_change(self, sender, app_data) -> None:
@@ -806,11 +1021,11 @@ class SlicerGUI:
         self._clear_container(self._file_dialog_dir_tag)
         directories = self._list_directories(self._current_dir)
         if not directories:
-            dpg.add_text("No folders", parent=self._file_dialog_dir_tag, color=C.TEXT_SECONDARY)
+            dpg.add_text("No folders", parent=self._file_dialog_dir_tag, color=C.TEXT_MEDIUM)
             return
         for entry in directories:
             btn = dpg.add_button(
-                label=f"📁  {entry.name}",
+                label=f"\U0001f4c1  {entry.name}",
                 parent=self._file_dialog_dir_tag,
                 callback=self._on_dir_selected,
                 user_data=str(entry),
@@ -824,14 +1039,14 @@ class SlicerGUI:
         self._clear_container(self._file_dialog_file_tag)
         files = self._list_files(self._current_dir)
         if not files:
-            dpg.add_text("No supported files", parent=self._file_dialog_file_tag, color=C.TEXT_SECONDARY)
+            dpg.add_text("No supported files", parent=self._file_dialog_file_tag, color=C.TEXT_MEDIUM)
             return
         for sample in files:
             size_kb = sample.stat().st_size / 1024
             mod_time = time.strftime("%Y-%m-%d %H:%M", time.localtime(sample.stat().st_mtime))
             with dpg.group(parent=self._file_dialog_file_tag):
                 file_btn = dpg.add_button(
-                    label=f"📦  {sample.name}",
+                    label=f"\U0001f4e6  {sample.name}",
                     width=-1,
                     height=34,
                     callback=self._load_asset_file,
@@ -839,10 +1054,10 @@ class SlicerGUI:
                 )
                 dpg.bind_item_theme(file_btn, self._th_flat)
                 with dpg.tooltip(file_btn):
-                    dpg.add_text(str(sample), color=C.TEXT_SECONDARY)
-                    dpg.add_text(f"Size: {size_kb:.1f} KB", color=C.TEXT_SECONDARY)
-                    dpg.add_text(f"Modified: {mod_time}", color=C.TEXT_SECONDARY)
-                dpg.add_text(f"Size: {size_kb:.1f} KB  ·  Modified: {mod_time}", color=C.TEXT_SECONDARY)
+                    dpg.add_text(str(sample), color=C.TOOLTIP_TEXT)
+                    dpg.add_text(f"Size: {size_kb:.1f} KB", color=C.TOOLTIP_TEXT)
+                    dpg.add_text(f"Modified: {mod_time}", color=C.TOOLTIP_TEXT)
+                dpg.add_text(f"Size: {size_kb:.1f} KB  \u00b7  Modified: {mod_time}", color=C.TEXT_MEDIUM)
                 dpg.add_separator()
 
     def _clear_container(self, tag: str) -> None:
@@ -1013,6 +1228,8 @@ class SlicerGUI:
     #  Status / counters
     # =====================================================================
     def _set_status(self, msg: str) -> None:
+        if not dpg.does_item_exist("status_text"):
+            return
         plate = self.scene.build_plate
         txt = (
             f"{msg}   \u00b7   "
@@ -1025,6 +1242,16 @@ class SlicerGUI:
         total_tris = sum(o.mesh.faces.shape[0] for o in self.scene.objects)
         dpg.set_value("vp_obj_count", f"Objects: {self.scene.object_count}")
         dpg.set_value("vp_tri_count", f"Triangles: {total_tris:,}")
+
+        # Update job specs (Cura JobSpecs.qml)
+        obj = self.scene.selected_object
+        if obj:
+            dpg.set_value("job_filename", obj.name)
+            dpg.set_value("job_faces", f"{obj.mesh.faces.shape[0]:,} faces")
+        else:
+            dpg.set_value("job_filename", "")
+            dpg.set_value("job_faces", "")
+
         self._set_status("Ready")
 
     def _gather_slice_params(self) -> dict:
