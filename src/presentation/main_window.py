@@ -1060,12 +1060,91 @@ class SlicerGUI:
                     tag,
                     self._th_stage_active if s == stage else self._th_stage_inactive,
                 )
+
+        # --- Show / hide panels based on stage ---
+        # PREPARE: show toolbar + right panel + hide preview/monitor overlays
+        # PREVIEW: hide toolbar + right panel, show layer slider
+        # MONITOR: hide toolbar + right panel, show monitor info
+
+        show_toolbar = (stage == "prepare")
+        show_right   = (stage == "prepare") and self._right_panel_visible
+        show_preview = (stage == "preview")
+        show_monitor = (stage == "monitor")
+
+        if dpg.does_item_exist("left_toolbar"):
+            dpg.configure_item("left_toolbar", show=show_toolbar)
+        if dpg.does_item_exist("right_panel"):
+            dpg.configure_item("right_panel", show=show_right)
+        if dpg.does_item_exist("preview_controls_group"):
+            dpg.configure_item("preview_controls_group", show=show_preview)
+        if dpg.does_item_exist("monitor_info_group"):
+            dpg.configure_item("monitor_info_group", show=show_monitor)
+
+        if stage == "preview":
+            self.viewport.set_preview_mode(True)
+            if self.slicer.last_parts:
+                self.viewport.set_preview_data(self.slicer.last_parts)
+                count = self.viewport.preview_layer_count
+                if dpg.does_item_exist("layer_slider"):
+                    dpg.configure_item("layer_slider", max_value=max(0, count - 1))
+                    dpg.set_value("layer_slider", 0)
+                if dpg.does_item_exist("layer_counter"):
+                    dpg.set_value("layer_counter", f"0 / {count}")
+                self.viewport.preview_layer_index = 0
+                self.viewport.rebuild_preview()
+            else:
+                self._set_status("No slice data — run Slice first for layer preview")
+                self.viewport.rebuild_scene()
+        elif stage == "monitor":
+            self.viewport.set_preview_mode(False)
+            # Update monitor text
+            if self.slicer.last_result:
+                r = self.slicer.last_result
+                txt = (
+                    f"Last Slice Result:\n"
+                    f"  Total Layers : {r.get('total_layers', '?')}\n"
+                    f"  Slice Time   : {r.get('elapsed_s', '?')} s\n"
+                    f"  Est. Build   : {r.get('est_build_time_h', '?')} h\n"
+                    f"  Layer Thick. : {r.get('layer_thickness', '?')} mm"
+                )
+                dpg.set_value("monitor_details", txt)
+                dpg.set_value("monitor_status_text", "Status: Slice data available")
+            else:
+                dpg.set_value("monitor_status_text", "Status: Idle — No active print job")
+                dpg.set_value("monitor_details", "")
+            self.viewport.rebuild_scene()
+        else:
+            # PREPARE
+            self.viewport.set_preview_mode(False)
+            self.viewport.rebuild_scene()
+
         self._set_status(f"Stage: {stage.upper()}")
+
+    def _on_layer_slider(self, sender=None, app_data=None) -> None:
+        """Handle layer slider changes in PREVIEW mode."""
+        idx = dpg.get_value("layer_slider")
+        self.viewport.preview_layer_index = idx
+        total = self.viewport.preview_layer_count
+        if dpg.does_item_exist("layer_counter"):
+            dpg.set_value("layer_counter", f"{idx} / {total}")
+        self.viewport.rebuild_preview()
 
     # -- Tool selection (Cura Toolbar.qml) --
     def _set_tool(self, tool: str) -> None:
         self._active_tool = tool
+        self.viewport.active_tool = tool  # Sync viewport tool for mouse handling
         self._set_status(f"Active tool: {tool.capitalize()}")
+
+        # If mirror tool selected, execute mirror immediately
+        if tool == "mirror":
+            if self.scene.selected_object:
+                axis = self._mirror_axis
+                self.scene.mirror_selected(axis)
+                self._refresh_all()
+                self._set_status(f"Mirrored on {axis.upper()} axis")
+            else:
+                self._set_status("Select an object to mirror")
+
         mapping = {
             "move": "tool_move", "scale": "tool_scale",
             "rotate": "tool_rotate", "mirror": "tool_mirror",
@@ -1114,13 +1193,21 @@ class SlicerGUI:
             self._set_status(f"Machine: {app_data}")
             self._refresh_all()
 
+    def _on_material_change(self, sender=None, app_data=None) -> None:
+        """Load material-specific default parameters."""
+        mat = app_data if app_data else dpg.get_value("material_combo")
+        preset = MATERIAL_PRESETS.get(mat)
+        if preset:
+            dpg.set_value("param_laser_power", preset["laser_power"])
+            dpg.set_value("param_scan_speed", preset["scan_speed"])
+            dpg.set_value("param_hatch_spacing", preset["hatch_spacing"])
+            dpg.set_value("param_hatch_angle", preset["hatch_angle_increment"])
+            self._set_status(f"Material: {mat} — defaults loaded")
+        elif mat == "Custom":
+            self._set_status("Custom material — set parameters manually")
+
     def _on_profile_change(self, sender, app_data) -> None:
-        presets = {
-            "Fine (20 um)":   0.020,
-            "Normal (30 um)": 0.030,
-            "Draft (50 um)":  0.050,
-        }
-        lt = presets.get(app_data)
+        lt = PROFILE_PRESETS.get(app_data)
         if lt:
             dpg.set_value("param_layer_thickness", lt)
             self._set_status(f"Profile: {app_data}")
@@ -1136,6 +1223,13 @@ class SlicerGUI:
             self._set_status("Nothing to slice \u2014 import a model first.")
             return
 
+        # Validate build volume first
+        issues = self.scene.check_build_volume()
+        if issues:
+            warnings = "\n".join(msg for _, msg in issues)
+            self._set_status(f"Warning: {len(issues)} object(s) outside build volume")
+            dpg.set_value("info_text", f"Build Volume Warnings:\n{warnings}")
+
         params = self._gather_slice_params()
         meshes = self.scene.collect_for_slicing()
 
@@ -1146,32 +1240,37 @@ class SlicerGUI:
         self._set_status("Slicing started...")
         dpg.set_value("slice_summary", "")
 
+        def _progress_cb(val: float, msg: str) -> None:
+            try:
+                dpg.set_value("slice_progress", val)
+                dpg.configure_item("slice_progress", overlay=msg)
+            except Exception:
+                pass
+
         def _worker():
             try:
                 t0 = time.perf_counter()
-                dpg.set_value("slice_progress", 0.1)
-                dpg.configure_item("slice_progress", overlay="Slicing...")
-
-                result = self.slicer.slice(meshes, params)
-
+                result = self.slicer.slice(meshes, params,
+                                           progress_cb=_progress_cb)
                 dpg.set_value("slice_progress", 1.0)
                 elapsed = time.perf_counter() - t0
-                dpg.configure_item(
-                    "slice_progress", overlay=f"Done in {elapsed:.1f}s",
-                )
-
+                dpg.configure_item("slice_progress",
+                                   overlay=f"Done in {elapsed:.1f}s")
+                est_h = result.get("est_build_time_h", 0)
                 summary = (
                     f"Slicing complete!\n"
                     f"Parts       : {len(meshes)}\n"
                     f"Total Layers: {result.get('total_layers', '?')}\n"
                     f"Thickness   : {params['layer_thickness']} mm\n"
-                    f"Time        : {elapsed:.2f} s"
+                    f"Time        : {elapsed:.2f} s\n"
+                    f"Est. Build  : {est_h:.1f} h"
                 )
                 dpg.set_value("slice_summary", summary)
                 dpg.set_value("info_text", summary)
                 self._set_status(
                     f"Slicing finished \u2014 "
-                    f"{result.get('total_layers', '?')} layers in {elapsed:.1f}s"
+                    f"{result.get('total_layers', '?')} layers in "
+                    f"{elapsed:.1f}s (est. build: {est_h:.1f}h)"
                 )
             except Exception as exc:
                 dpg.set_value("slice_progress", 0.0)
@@ -1180,9 +1279,8 @@ class SlicerGUI:
                 self._set_status(f"Slice failed: {exc}")
             finally:
                 self._slice_running = False
-                dpg.configure_item(
-                    "slice_btn", label="    Slice Now    ", enabled=True,
-                )
+                dpg.configure_item("slice_btn",
+                                   label="    Slice Now    ", enabled=True)
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -1333,7 +1431,7 @@ class SlicerGUI:
             dpg.set_value("info_text", str(exc))
             return
 
-        self.scene.add_mesh(name, mesh)
+        self.scene.add_mesh(name, mesh, source_path=str(file_path))
         info = (
             f"Loaded: {name}\n"
             f"Vertices : {mesh.vertices.shape[0]:,}\n"
@@ -1384,8 +1482,10 @@ class SlicerGUI:
             translation=np.array(dpg.get_value("tf_pos"), dtype=np.float64),
             rotation_deg=np.array(dpg.get_value("tf_rot"), dtype=np.float64),
             scale=np.array(dpg.get_value("tf_scale"), dtype=np.float64),
+            record_undo=True,
         )
         self.viewport.rebuild_scene()
+        self._check_build_volume()
 
     def _refresh_sidebar(self) -> None:
         items = [f"[{o.uid}] {o.name}" for o in self.scene.objects]
@@ -1403,8 +1503,9 @@ class SlicerGUI:
 
     def _refresh_all(self) -> None:
         self._refresh_sidebar()
-        self.viewport.rebuild_scene()
         self._update_counters()
+        self.viewport.rebuild_scene()
+        self._check_build_volume()
 
     # =====================================================================
     #  Status / counters
@@ -1434,7 +1535,238 @@ class SlicerGUI:
             dpg.set_value("job_filename", "")
             dpg.set_value("job_faces", "")
 
-        self._set_status("Ready")
+    # =====================================================================
+    #  Build volume validation
+    # =====================================================================
+    def _check_build_volume(self) -> None:
+        # Check if any objects violate the build volume and update warnings.
+        issues = self.scene.check_build_volume()
+        if issues:
+            msg = f"\u26a0 {len(issues)} object(s) outside build volume"
+            dpg.set_value("info_text", msg)
+
+    # =====================================================================
+    #  Settings / Preferences dialogs
+    # =====================================================================
+    def _cmd_show_materials(self, sender=None, app_data=None) -> None:
+        if dpg.does_item_exist("materials_popup"):
+            dpg.delete_item("materials_popup")
+        with dpg.window(label="Materials Library", modal=True,
+                        tag="materials_popup", width=450, height=340):
+            dpg.add_text("Preconfigured SLM Material Profiles",
+                         color=C.ACCENT)
+            dpg.add_separator()
+            for mat_name, params in MATERIAL_PRESETS.items():
+                with dpg.collapsing_header(label=f"  {mat_name}", default_open=False):
+                    for k, v in params.items():
+                        label = k.replace("_", " ").title()
+                        dpg.add_text(f"  {label}: {v}", color=C.TEXT_MEDIUM)
+                    cur_mat = mat_name  # explicit binding
+                    btn = dpg.add_button(
+                        label=f"  Apply {mat_name}  ",
+                        callback=self._on_material_dialog_apply,
+                        user_data=cur_mat,
+                    )
+                    dpg.bind_item_theme(btn, self._th_primary)
+            dpg.add_spacer(height=8)
+            close_btn = dpg.add_button(label="  Close  ",
+                                       callback=lambda: dpg.delete_item("materials_popup"))
+            dpg.bind_item_theme(close_btn, self._th_secondary)
+
+    def _on_material_dialog_apply(self, sender, app_data, user_data) -> None:
+        dpg.set_value("material_combo", user_data)
+        self._on_material_change(app_data=user_data)
+        if dpg.does_item_exist("materials_popup"):
+            dpg.delete_item("materials_popup")
+
+    def _cmd_show_profiles(self, sender=None, app_data=None) -> None:
+        if dpg.does_item_exist("profiles_popup"):
+            dpg.delete_item("profiles_popup")
+        with dpg.window(label="Quality Profiles", modal=True,
+                        tag="profiles_popup", width=380, height=260):
+            dpg.add_text("Select a Layer Thickness Profile", color=C.ACCENT)
+            dpg.add_separator()
+            for prof_name, lt in PROFILE_PRESETS.items():
+                cur_prof = prof_name
+                btn = dpg.add_button(
+                    label=f"  {prof_name}  — {lt * 1000:.0f} \u00b5m layer thickness",
+                    width=-1,
+                    callback=self._on_profile_dialog_apply,
+                    user_data=cur_prof,
+                )
+                dpg.bind_item_theme(btn, self._th_secondary)
+            dpg.add_spacer(height=8)
+            close_btn = dpg.add_button(label="  Close  ",
+                                       callback=lambda: dpg.delete_item("profiles_popup"))
+            dpg.bind_item_theme(close_btn, self._th_secondary)
+
+    def _on_profile_dialog_apply(self, sender, app_data, user_data) -> None:
+        dpg.set_value("profile_combo", user_data)
+        self._on_profile_change(None, user_data)
+        if dpg.does_item_exist("profiles_popup"):
+            dpg.delete_item("profiles_popup")
+
+    def _cmd_post_processing(self, sender=None, app_data=None) -> None:
+        if dpg.does_item_exist("pp_popup"):
+            dpg.delete_item("pp_popup")
+        with dpg.window(label="Post Processing", modal=True,
+                        tag="pp_popup", width=420, height=200):
+            dpg.add_text("Post-Processing Scripts", color=C.ACCENT)
+            dpg.add_separator()
+            dpg.add_text("No post-processing scripts configured.",
+                         color=C.TEXT_MEDIUM)
+            dpg.add_text(
+                "Post-processing can modify G-code/CLI output after slicing.\n"
+                "Scripts can be added in future versions.",
+                color=C.TEXT_LIGHTER, wrap=380,
+            )
+            dpg.add_spacer(height=8)
+            close_btn = dpg.add_button(label="  Close  ",
+                                       callback=lambda: dpg.delete_item("pp_popup"))
+            dpg.bind_item_theme(close_btn, self._th_secondary)
+
+    def _cmd_toolpath_gen(self, sender=None, app_data=None) -> None:
+        if dpg.does_item_exist("tg_popup"):
+            dpg.delete_item("tg_popup")
+        with dpg.window(label="Toolpath Generator", modal=True,
+                        tag="tg_popup", width=420, height=200):
+            dpg.add_text("Toolpath Visualization", color=C.ACCENT)
+            dpg.add_separator()
+            if self.slicer.last_result:
+                r = self.slicer.last_result
+                dpg.add_text(
+                    f"Last slice: {r['total_layers']} layers, "
+                    f"{r['elapsed_s']}s compute time.",
+                    color=C.TEXT_MEDIUM,
+                )
+                dpg.add_text(
+                    "Use File > Export Sliced Data (CLI) to generate toolpath output.",
+                    color=C.TEXT_LIGHTER, wrap=380,
+                )
+            else:
+                dpg.add_text(
+                    "No slice data available.\n"
+                    "Run Slice first, then export the toolpath.",
+                    color=C.TEXT_MEDIUM, wrap=380,
+                )
+            dpg.add_spacer(height=8)
+            close_btn = dpg.add_button(label="  Close  ",
+                                       callback=lambda: dpg.delete_item("tg_popup"))
+            dpg.bind_item_theme(close_btn, self._th_secondary)
+
+    def _cmd_prefs_general(self, sender=None, app_data=None) -> None:
+        if dpg.does_item_exist("prefs_popup"):
+            dpg.delete_item("prefs_popup")
+        with dpg.window(label="General Preferences", modal=True,
+                        tag="prefs_popup", width=440, height=280):
+            dpg.add_text("Application Settings", color=C.ACCENT)
+            dpg.add_separator()
+            dpg.add_spacer(height=4)
+            dpg.add_text("Default Save Directory", color=C.TEXT_MEDIUM)
+            dpg.add_input_text(
+                default_value=str(Path.home() / "Documents"),
+                tag="pref_save_dir", width=-1,
+            )
+            dpg.add_spacer(height=4)
+            dpg.add_checkbox(
+                label="Show build volume warnings",
+                default_value=True, tag="pref_bv_warn",
+            )
+            dpg.add_checkbox(
+                label="Auto-centre imported models",
+                default_value=True, tag="pref_auto_centre",
+            )
+            dpg.add_spacer(height=4)
+            dpg.add_text("Mirror Axis (for Mirror tool)", color=C.TEXT_MEDIUM)
+            dpg.add_combo(
+                items=["X", "Y", "Z"], default_value=self._mirror_axis.upper(),
+                tag="pref_mirror_axis", width=100,
+                callback=self._on_mirror_axis_change,
+            )
+            dpg.add_spacer(height=8)
+            close_btn = dpg.add_button(label="  Close  ",
+                                       callback=lambda: dpg.delete_item("prefs_popup"))
+            dpg.bind_item_theme(close_btn, self._th_secondary)
+
+    def _on_mirror_axis_change(self, sender=None, app_data=None) -> None:
+        if app_data:
+            self._mirror_axis = app_data.lower()
+
+    def _cmd_prefs_theme(self, sender=None, app_data=None) -> None:
+        if dpg.does_item_exist("theme_popup"):
+            dpg.delete_item("theme_popup")
+        with dpg.window(label="Theme Settings", modal=True,
+                        tag="theme_popup", width=380, height=180):
+            dpg.add_text("Theme Configuration", color=C.ACCENT)
+            dpg.add_separator()
+            dpg.add_text(
+                "Current theme: Cura Light\n\n"
+                "Additional themes may be added in future releases.\n"
+                "The Cura 5.x Light theme is optimised for SLM workflows.",
+                color=C.TEXT_MEDIUM, wrap=350,
+            )
+            dpg.add_spacer(height=8)
+            close_btn = dpg.add_button(label="  Close  ",
+                                       callback=lambda: dpg.delete_item("theme_popup"))
+            dpg.bind_item_theme(close_btn, self._th_secondary)
+
+    def _cmd_release_notes(self, sender=None, app_data=None) -> None:
+        if dpg.does_item_exist("rn_popup"):
+            dpg.delete_item("rn_popup")
+        with dpg.window(label="Release Notes", modal=True,
+                        tag="rn_popup", width=460, height=320):
+            dpg.add_text("PySLM Slicer — Release Notes", color=C.ACCENT)
+            dpg.add_separator()
+            dpg.add_text(
+                "Version 0.2.0  (Latest)\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "• Full widget functionality — all controls are now active\n"
+                "• Stage switching: PREPARE / PREVIEW / MONITOR views\n"
+                "• Tool interactivity: Move, Scale, Rotate, Mirror\n"
+                "• Material presets: Ti-6Al-4V, 316L, AlSi10Mg, IN718\n"
+                "• Profile presets with correct layer thicknesses\n"
+                "• Recommended / Custom mode toggles parameter sections\n"
+                "• Save Project (JSON) and Export (CLI / SVG)\n"
+                "• Layer-by-layer preview in PREVIEW stage\n"
+                "• Build volume validation warnings\n"
+                "• Undo / Redo (Ctrl+Z / Ctrl+Y)\n"
+                "• Auto-arrange objects on build plate\n"
+                "• Progress callback during slicing\n"
+                "• Build time estimation\n\n"
+                "Version 0.1.0\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "• Initial release with Cura 5.x exact GUI\n"
+                "• Clean Architecture + DDD structure\n"
+                "• PySLM engine integration\n"
+                "• Dear PyGui + PyVista viewport\n",
+                color=C.TEXT_MEDIUM, wrap=420,
+            )
+            dpg.add_spacer(height=6)
+            close_btn = dpg.add_button(label="  Close  ",
+                                       callback=lambda: dpg.delete_item("rn_popup"))
+            dpg.bind_item_theme(close_btn, self._th_secondary)
+
+    def _cmd_marketplace(self, sender=None, app_data=None) -> None:
+        if dpg.does_item_exist("mkt_popup"):
+            dpg.delete_item("mkt_popup")
+        with dpg.window(label="Marketplace", modal=True,
+                        tag="mkt_popup", width=420, height=200):
+            dpg.add_text("PySLM Extension Marketplace", color=C.ACCENT)
+            dpg.add_separator()
+            dpg.add_text(
+                "The marketplace allows you to discover and install\n"
+                "community plugins for PySLM Slicer.\n\n"
+                "No plugins are currently available.\n"
+                "Check back in future versions for:\n"
+                "  \u2022 Advanced hatching strategies\n"
+                "  \u2022 Custom material database\n"
+                "  \u2022 Cloud-based build monitoring",
+                color=C.TEXT_MEDIUM, wrap=390,
+            )
+            dpg.add_spacer(height=6)
+            close_btn = dpg.add_button(label="  Close  ",
+                                       callback=lambda: dpg.delete_item("mkt_popup"))
+            dpg.bind_item_theme(close_btn, self._th_secondary)
 
     def _gather_slice_params(self) -> dict:
         return {
@@ -1448,3 +1780,4 @@ class SlicerGUI:
             "island_scanning":       dpg.get_value("param_island"),
             "island_size":           dpg.get_value("param_island_size"),
         }
+
