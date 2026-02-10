@@ -11,12 +11,14 @@ Bridges PyVista (off-screen VTK renderer) with Dear PyGui
 * Axis orientation arrows (Cura x_axis/y_axis/z_axis colors)
 * Ambient + key + fill three-point lighting
 * Orbit / Pan / Zoom via mouse
+* Tool-specific object interaction: Move / Scale / Rotate / Mirror
 * Object XY-plane dragging
+* Layer preview mode for PREVIEW stage
 """
 from __future__ import annotations
 
 import math
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pyvista as pv
@@ -41,6 +43,7 @@ _GRID_COLOR   = "#E4E4E4"               # buildplate_grid_minor
 _MESH_COLOR   = "#A0D8EF"               # Cura-style light blue (default object)
 _SELECTED_CLR = "#3282FF"               # model_selection_outline [50,130,255]
 _GHOST_CLR    = "#C0C0C0"               # unselected hint
+_WARN_CLR     = "#DA1E28"               # out-of-bounds warning colour
 
 
 class ViewportManager:
@@ -85,10 +88,27 @@ class ViewportManager:
         self._last: Optional[Tuple[float, float]] = None
         self._drag_uid: Optional[str] = None
 
+        # Active tool  (set by the GUI)
+        self._active_tool: str = "move"
+
         # Sensitivity
         self._orbit_speed = 0.35
         self._pan_speed   = 0.30
         self._zoom_speed  = 0.08
+
+        # Layer preview state
+        self._preview_mode: bool = False
+        self._preview_layers: List = []
+        self._preview_layer_idx: int = 0
+
+    # ---- Tool property ----------------------------------------------------
+    @property
+    def active_tool(self) -> str:
+        return self._active_tool
+
+    @active_tool.setter
+    def active_tool(self, tool: str) -> None:
+        self._active_tool = tool
 
     # =====================================================================
     #  Setup
@@ -257,7 +277,12 @@ class ViewportManager:
             self._mmb = False
         self._last = None
 
-    def on_mouse_move(self, pos: Tuple[float, float]) -> None:
+    def on_mouse_move(self, pos: Tuple[float, float],
+                      on_transform_cb=None) -> None:
+        """Handle mouse movement.
+        on_transform_cb: optional callback invoked after a tool transform
+        so the GUI can sync the sidebar.
+        """
         if self._last is None:
             self._last = pos
             return
@@ -295,12 +320,40 @@ class ViewportManager:
             self._push_frame()
 
         elif self._lmb and self._drag_uid:
-            # OBJECT DRAG on XY plane
             obj = self.scene.get_object(self._drag_uid)
-            if obj:
+            if not obj:
+                return
+
+            tool = self._active_tool
+
+            if tool == "move":
+                # OBJECT DRAG on XY plane
                 obj.transform.translation[0] += dx * 0.15
                 obj.transform.translation[1] -= dy * 0.15
                 self.rebuild_scene()
+                if on_transform_cb:
+                    on_transform_cb()
+
+            elif tool == "scale":
+                # Uniform scale by drag distance
+                factor = 1.0 + (dx - dy) * 0.005
+                factor = max(0.01, factor)
+                obj.transform.scale *= factor
+                self.rebuild_scene()
+                if on_transform_cb:
+                    on_transform_cb()
+
+            elif tool == "rotate":
+                # Rotate around Z axis
+                angle_deg = dx * 0.5
+                obj.transform.rotation_deg[2] += angle_deg
+                self.rebuild_scene()
+                if on_transform_cb:
+                    on_transform_cb()
+
+            elif tool == "mirror":
+                # Mirror is click-based (handled by GUI), not drag
+                pass
 
     def on_mouse_wheel(self, delta: float) -> None:
         factor = 1.0 - delta * self._zoom_speed
@@ -309,25 +362,128 @@ class ViewportManager:
         self._push_frame()
 
     # =====================================================================
-    #  Object picking (simplified centroid proximity)
+    #  Object picking (improved: distance to projected centroid)
     # =====================================================================
     def try_pick_object(self, mouse_pos: Tuple[float, float]) -> Optional[str]:
+        """Pick the object whose projected centroid is closest to mouse_pos.
+        Uses camera projection for better accuracy than pure 3D distance."""
         best_uid = None
         best_dist = float("inf")
-        cam_pos = np.array(self.plotter.camera.position)
 
-        for obj in self.scene.objects:
-            if not obj.visible:
-                continue
-            centre = obj.transformed_mesh.centroid
-            dist = np.linalg.norm(centre - cam_pos)
-            if dist < best_dist:
-                best_dist = dist
-                best_uid = obj.uid
+        # Attempt projection-based picking
+        try:
+            cam = self.plotter.camera
+            renderer = self.plotter.renderer
+            w, h = self.width, self.height
+
+            for obj in self.scene.objects:
+                if not obj.visible:
+                    continue
+                centre = obj.transformed_mesh.centroid
+
+                # Use VTK coordinate conversion
+                coord = renderer.world_to_display(centre)
+                if coord is not None:
+                    sx, sy = coord[0], h - coord[1]  # flip Y
+                    d = math.sqrt((sx - mouse_pos[0]) ** 2 + (sy - mouse_pos[1]) ** 2)
+                    if d < best_dist and d < 150:  # 150px threshold
+                        best_dist = d
+                        best_uid = obj.uid
+        except Exception:
+            # Fallback: simple 3D centroid proximity
+            cam_pos = np.array(self.plotter.camera.position)
+            for obj in self.scene.objects:
+                if not obj.visible:
+                    continue
+                centre = obj.transformed_mesh.centroid
+                dist = np.linalg.norm(centre - cam_pos)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_uid = obj.uid
+
         return best_uid
 
     def start_drag(self, uid: str) -> None:
         self._drag_uid = uid
+
+    # =====================================================================
+    #  Layer Preview mode  (for PREVIEW stage)
+    # =====================================================================
+    def set_preview_mode(self, enabled: bool) -> None:
+        self._preview_mode = enabled
+        if not enabled:
+            self._preview_layers = []
+            self._preview_layer_idx = 0
+
+    def set_preview_data(self, parts: list) -> None:
+        """Load SLMPart list for preview. Combines all layer contours."""
+        self._preview_layers = []
+        # Merge layers across parts by z-height
+        z_map: dict[float, list] = {}
+        for part in parts:
+            for layer in part.layers:
+                z_key = round(layer.z_height, 4)
+                if z_key not in z_map:
+                    z_map[z_key] = []
+                z_map[z_key].extend(layer.contours)
+        for z in sorted(z_map.keys()):
+            self._preview_layers.append((z, z_map[z]))
+        self._preview_layer_idx = min(
+            self._preview_layer_idx, max(0, len(self._preview_layers) - 1)
+        )
+
+    @property
+    def preview_layer_count(self) -> int:
+        return len(self._preview_layers)
+
+    @property
+    def preview_layer_index(self) -> int:
+        return self._preview_layer_idx
+
+    @preview_layer_index.setter
+    def preview_layer_index(self, idx: int) -> None:
+        self._preview_layer_idx = max(0, min(idx, len(self._preview_layers) - 1))
+
+    def rebuild_preview(self) -> None:
+        """Render the current preview layer as 3D lines on the build plate."""
+        self.plotter.clear()
+        self._add_build_plate()
+        self._add_grid()
+        self._add_axes()
+
+        if self._preview_layers and 0 <= self._preview_layer_idx < len(self._preview_layers):
+            z, contours = self._preview_layers[self._preview_layer_idx]
+            for ci, contour in enumerate(contours):
+                if contour is None or len(contour) < 2:
+                    continue
+                pts_2d = np.array(contour)
+                if pts_2d.ndim != 2 or pts_2d.shape[1] < 2:
+                    continue
+                n = pts_2d.shape[0]
+                pts_3d = np.zeros((n, 3))
+                pts_3d[:, :2] = pts_2d[:, :2]
+                pts_3d[:, 2] = z
+                try:
+                    line = pv.lines_from_points(pts_3d)
+                    self.plotter.add_mesh(
+                        line, color="#196EF0", line_width=2,
+                        name=f"__contour_{ci}__",
+                    )
+                except Exception:
+                    pass
+
+            # Add a transparent disc at current Z to show layer plane
+            disc = pv.Disc(
+                center=(0, 0, z), inner=0,
+                outer=self.scene.build_plate.radius,
+                normal=(0, 0, 1), c_res=80,
+            )
+            self.plotter.add_mesh(
+                disc, color="#196EF0", opacity=0.08, name="__layer_plane__",
+            )
+
+        self.plotter.reset_camera_clipping_range()
+        self._push_frame()
 
     # =====================================================================
     #  Cleanup

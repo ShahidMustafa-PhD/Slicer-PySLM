@@ -28,6 +28,7 @@ ViewOrientationControls : Front / Top / Left / Right / Home camera presets
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 import threading
@@ -38,7 +39,7 @@ import numpy as np
 import dearpygui.dearpygui as dpg
 
 from src.application.scene_manager import SceneManager
-from src.application.slicer_service import SlicerService
+from src.application.slicer_service import SlicerService, MATERIAL_PRESETS, PROFILE_PRESETS
 from src.infrastructure.repositories.asset_loader import AssetLoader, AssetLoadError
 from src.presentation.viewport_manager import ViewportManager
 from src.presentation.theme import (
@@ -104,6 +105,7 @@ class SlicerGUI:
         self._slice_running = False
         self._active_tool = "move"
         self._active_stage = "prepare"
+        self._active_mode = "recommended"    # recommended | custom
         self._right_panel_visible = True
         self._slice_progress = 0.0
         self._current_dir = Path.home()
@@ -113,6 +115,7 @@ class SlicerGUI:
         self._file_dialog_file_tag = "file_dialog_file_entries"
         self._file_dialog_path_tag = "file_dialog_path"
         self._file_dialog_status_tag = "file_dialog_status"
+        self._mirror_axis = "x"             # current mirror axis
 
     # =====================================================================
     #  Entry point
@@ -194,20 +197,31 @@ class SlicerGUI:
                     label="Open File(s)...    Ctrl+O",
                     callback=self._cmd_import,
                 )
-                dpg.add_menu_item(label="Open Recent", enabled=False)
+                dpg.add_menu_item(
+                    label="Open Recent",
+                    tag="menu_open_recent",
+                    callback=self._cmd_open_recent,
+                )
                 dpg.add_separator()
                 dpg.add_menu_item(label="Save Project...", callback=self._cmd_save_build)
-                dpg.add_menu_item(label="Save As...", enabled=False)
+                dpg.add_menu_item(label="Save As...", callback=self._cmd_save_as)
+                dpg.add_separator()
+                dpg.add_menu_item(label="Export Sliced Data (CLI)...", callback=self._cmd_export_cli)
+                dpg.add_menu_item(label="Export Layer SVG...",        callback=self._cmd_export_svg)
                 dpg.add_separator()
                 dpg.add_menu_item(label="Quit", callback=lambda: dpg.stop_dearpygui())
 
             with dpg.menu(label="Edit"):
+                dpg.add_menu_item(label="Undo                Ctrl+Z", callback=self._cmd_undo, tag="menu_undo")
+                dpg.add_menu_item(label="Redo                Ctrl+Y", callback=self._cmd_redo, tag="menu_redo")
+                dpg.add_separator()
                 dpg.add_menu_item(label="Select All          Ctrl+A", callback=self._cmd_select_all)
                 dpg.add_menu_item(label="Clear Selection",            callback=self._cmd_deselect)
                 dpg.add_separator()
                 dpg.add_menu_item(label="Duplicate           Ctrl+D", callback=self._cmd_duplicate)
                 dpg.add_menu_item(label="Delete              Del",    callback=self._cmd_delete)
                 dpg.add_separator()
+                dpg.add_menu_item(label="Arrange Objects",            callback=self._cmd_auto_arrange)
                 dpg.add_menu_item(label="Clear Build Plate",          callback=self._cmd_clear_plate)
 
             with dpg.menu(label="View"):
@@ -217,24 +231,25 @@ class SlicerGUI:
                 dpg.add_menu_item(label="Left",                       callback=lambda: self._set_camera_view("left"))
                 dpg.add_menu_item(label="Right",                      callback=lambda: self._set_camera_view("right"))
                 dpg.add_separator()
+                dpg.add_menu_item(label="Fit All             F",      callback=self._cmd_fit_all)
                 dpg.add_menu_item(label="Toggle Print Setup",         callback=self._cmd_toggle_panel)
 
             with dpg.menu(label="Settings"):
                 dpg.add_menu_item(label="Printer...",     callback=self._cmd_show_plate_settings)
-                dpg.add_menu_item(label="Materials...",   enabled=False)
-                dpg.add_menu_item(label="Profiles...",    enabled=False)
+                dpg.add_menu_item(label="Materials...",   callback=self._cmd_show_materials)
+                dpg.add_menu_item(label="Profiles...",    callback=self._cmd_show_profiles)
 
             with dpg.menu(label="Extensions"):
-                dpg.add_menu_item(label="Post Processing...", enabled=False)
-                dpg.add_menu_item(label="Toolpath Generator", enabled=False)
+                dpg.add_menu_item(label="Post Processing...",  callback=self._cmd_post_processing)
+                dpg.add_menu_item(label="Toolpath Generator",  callback=self._cmd_toolpath_gen)
 
             with dpg.menu(label="Preferences"):
-                dpg.add_menu_item(label="General",      enabled=False)
-                dpg.add_menu_item(label="Theme",        enabled=False)
+                dpg.add_menu_item(label="General",      callback=self._cmd_prefs_general)
+                dpg.add_menu_item(label="Theme",        callback=self._cmd_prefs_theme)
 
             with dpg.menu(label="Help"):
                 dpg.add_menu_item(label="About PySLM Slicer", callback=self._cmd_about)
-                dpg.add_menu_item(label="Show Release Notes",  enabled=False)
+                dpg.add_menu_item(label="Show Release Notes",  callback=self._cmd_release_notes)
 
     # -----------------------------------------------------------------
     #  MAIN WINDOW HEADER  (Cura MainWindowHeader.qml)
@@ -285,7 +300,8 @@ class SlicerGUI:
             dpg.add_spacer(width=100)
 
             # ---- Right side: Marketplace + About ----
-            mkt = dpg.add_button(label="Marketplace", tag="marketplace_btn")
+            mkt = dpg.add_button(label="Marketplace", tag="marketplace_btn",
+                                   callback=self._cmd_marketplace)
             dpg.bind_item_theme(mkt, self._th_stage_inactive)
             dpg.add_spacer(width=8)
             abt = dpg.add_button(label="?", tag="about_header_btn", callback=self._cmd_about)
@@ -345,6 +361,26 @@ class SlicerGUI:
                 self.viewport.texture_tag,
                 tag="viewport_image",
             )
+
+            dpg.add_spacer(height=4)
+
+            # --- Layer preview slider (hidden by default, shown in PREVIEW stage) ---
+            with dpg.group(tag="preview_controls_group", show=False):
+                dpg.add_text("Layer Preview", tag="preview_label", color=C.ACCENT)
+                with dpg.group(horizontal=True):
+                    dpg.add_text("Layer:", color=C.TEXT_MEDIUM)
+                    dpg.add_slider_int(
+                        default_value=0, min_value=0, max_value=1,
+                        tag="layer_slider", width=-120,
+                        callback=self._on_layer_slider,
+                    )
+                    dpg.add_text("0 / 0", tag="layer_counter", color=C.TEXT_MEDIUM)
+
+            # --- Monitor info (hidden by default, shown in MONITOR stage) ---
+            with dpg.group(tag="monitor_info_group", show=False):
+                dpg.add_text("Build Monitor", tag="monitor_label", color=C.ACCENT)
+                dpg.add_text("Status: Idle — No active print job", tag="monitor_status_text", color=C.TEXT_MEDIUM)
+                dpg.add_text("", tag="monitor_details", color=C.TEXT_MEDIUM, wrap=500)
 
             dpg.add_spacer(height=4)
 
@@ -429,6 +465,7 @@ class SlicerGUI:
                 items=["Ti-6Al-4V", "316L Stainless", "AlSi10Mg", "IN718", "Custom"],
                 default_value="Ti-6Al-4V",
                 tag="material_combo", width=-1,
+                callback=self._on_material_change,
             )
             dpg.add_spacer(height=4)
 
@@ -686,6 +723,9 @@ class SlicerGUI:
             dpg.add_key_press_handler(dpg.mvKey_S,      callback=self._kb_scale)
             dpg.add_key_press_handler(dpg.mvKey_R,      callback=self._kb_rotate)
             dpg.add_key_press_handler(dpg.mvKey_A,      callback=self._kb_select_all)
+            dpg.add_key_press_handler(dpg.mvKey_M,      callback=lambda: self._set_tool("mirror"))
+            dpg.add_key_press_handler(dpg.mvKey_Z,      callback=self._kb_undo)
+            dpg.add_key_press_handler(dpg.mvKey_Y,      callback=self._kb_redo)
 
     def _kb_open(self):
         if dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl):
@@ -706,6 +746,14 @@ class SlicerGUI:
     def _kb_select_all(self):
         if dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl):
             self._cmd_select_all()
+
+    def _kb_undo(self):
+        if dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl):
+            self._cmd_undo()
+
+    def _kb_redo(self):
+        if dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl):
+            self._cmd_redo()
 
     # -- Mouse --
     def _is_over_viewport(self) -> bool:
@@ -734,7 +782,8 @@ class SlicerGUI:
     def _mouse_move_cb(self, sender, app_data) -> None:
         if not self._is_over_viewport():
             return
-        self.viewport.on_mouse_move(dpg.get_mouse_pos())
+        self.viewport.on_mouse_move(dpg.get_mouse_pos(),
+                                    on_transform_cb=self._refresh_sidebar)
 
     def _mouse_wheel_cb(self, sender, app_data) -> None:
         if not self._is_over_viewport():
@@ -795,19 +844,152 @@ class SlicerGUI:
         dpg.configure_item("right_panel", show=self._right_panel_visible)
 
     def _cmd_save_build(self, sender=None, app_data=None) -> None:
-        self._set_status("Save Project: not yet implemented")
+        """Save the current project (scene + params) as JSON."""
+        save_dir = Path.home() / "Documents"
+        save_path = save_dir / "pyslicer_project.json"
+        try:
+            data = self.scene.serialize()
+            data["params"] = self._gather_slice_params()
+            data["material"] = dpg.get_value("material_combo")
+            data["profile"] = dpg.get_value("profile_combo")
+            data["machine"] = dpg.get_value("machine_combo")
+            with open(save_path, "w") as f:
+                json.dump(data, f, indent=2)
+            self._set_status(f"Project saved to {save_path.name}")
+        except Exception as exc:
+            self._set_status(f"Save failed: {exc}")
+
+    def _cmd_save_as(self, sender=None, app_data=None) -> None:
+        """Save As — writes project JSON to Documents."""
+        self._cmd_save_build()
+
+    def _cmd_export_cli(self, sender=None, app_data=None) -> None:
+        """Export sliced data as CLI file."""
+        if not self.slicer.last_parts:
+            self._set_status("No slice data — run Slice first.")
+            return
+        out = Path.home() / "Documents" / "pyslicer_output.cli"
+        try:
+            n = self.slicer.export_cli(str(out))
+            self._set_status(f"Exported {n} layers to {out.name}")
+        except Exception as exc:
+            self._set_status(f"Export failed: {exc}")
+
+    def _cmd_export_svg(self, sender=None, app_data=None) -> None:
+        """Export current preview layer as SVG."""
+        if not self.slicer.last_parts:
+            self._set_status("No slice data — run Slice first.")
+            return
+        idx = self.viewport.preview_layer_index if self.viewport.preview_layer_count > 0 else 0
+        out = Path.home() / "Documents" / f"layer_{idx}.svg"
+        try:
+            ok = self.slicer.export_layer_svg(str(out), idx)
+            if ok:
+                self._set_status(f"Layer SVG saved to {out.name}")
+            else:
+                self._set_status("No contours to export for this layer.")
+        except Exception as exc:
+            self._set_status(f"SVG export failed: {exc}")
+
+    def _cmd_open_recent(self, sender=None, app_data=None) -> None:
+        """Show a popup with recently opened files."""
+        recent = self.scene.recent_files
+        if not recent:
+            self._set_status("No recent files.")
+            return
+        if dpg.does_item_exist("recent_popup"):
+            dpg.delete_item("recent_popup")
+        with dpg.window(label="Open Recent", modal=True, tag="recent_popup",
+                        width=500, height=300):
+            dpg.add_text("Recent Files", color=C.ACCENT)
+            dpg.add_separator()
+            for fp in recent:
+                p = Path(fp)
+                dpg.add_button(
+                    label=f"  {p.name}  ({p.parent})",
+                    width=-1,
+                    callback=self._on_recent_file_click,
+                    user_data=fp,
+                )
+            dpg.add_spacer(height=8)
+            close_btn = dpg.add_button(label="  Close  ",
+                                       callback=lambda: dpg.delete_item("recent_popup"))
+            dpg.bind_item_theme(close_btn, self._th_secondary)
+
+    def _on_recent_file_click(self, sender, app_data, user_data) -> None:
+        if dpg.does_item_exist("recent_popup"):
+            dpg.delete_item("recent_popup")
+        file_path = Path(user_data)
+        if not file_path.exists():
+            self._set_status(f"File not found: {file_path.name}")
+            return
+        self._load_file_direct(str(file_path))
+
+    def _load_file_direct(self, file_path: str) -> None:
+        """Load a mesh file directly (bypassing the file dialog)."""
+        fp = Path(file_path)
+        self._set_status(f"Loading {fp.name} ...")
+        try:
+            name, mesh = self.loader.load(str(fp))
+        except AssetLoadError as exc:
+            self._set_status(f"Load error: {exc}")
+            return
+        self.scene.add_mesh(name, mesh, source_path=str(fp))
+        info = (
+            f"Loaded: {name}\n"
+            f"Vertices : {mesh.vertices.shape[0]:,}\n"
+            f"Faces    : {mesh.faces.shape[0]:,}\n"
+            f"Size     : {mesh.extents.round(2)} mm"
+        )
+        dpg.set_value("info_text", info)
+        self._set_status(f"Imported {name} ({mesh.faces.shape[0]:,} triangles)")
+        self._refresh_all()
+
+    def _cmd_undo(self, sender=None, app_data=None) -> None:
+        label = self.scene.perform_undo()
+        if label:
+            self._set_status(f"Undo: {label}")
+            self._refresh_all()
+        else:
+            self._set_status("Nothing to undo")
+
+    def _cmd_redo(self, sender=None, app_data=None) -> None:
+        label = self.scene.perform_redo()
+        if label:
+            self._set_status(f"Redo: {label}")
+            self._refresh_all()
+        else:
+            self._set_status("Nothing to redo")
+
+    def _cmd_auto_arrange(self, sender=None, app_data=None) -> None:
+        self.scene.auto_arrange()
+        self._set_status("Objects auto-arranged")
+        self._refresh_all()
 
     def _cmd_mode_recommended(self, sender=None, app_data=None) -> None:
-        """Switch to Recommended mode."""
+        """Switch to Recommended mode — hide Advanced, simplify parameters."""
+        self._active_mode = "recommended"
         dpg.bind_item_theme("mode_recommended", self._th_primary)
         dpg.bind_item_theme("mode_custom", self._th_secondary)
-        self._set_status("Recommended mode")
+        # Hide advanced section, collapse process params
+        if dpg.does_item_exist("sec_advanced"):
+            dpg.configure_item("sec_advanced", show=False)
+        # Show simplified info text
+        if dpg.does_item_exist("sec_params"):
+            dpg.configure_item("sec_params", default_open=False, closable=False)
+        self._set_status("Recommended mode — simplified settings")
 
     def _cmd_mode_custom(self, sender=None, app_data=None) -> None:
         """Switch to Custom mode (shows all settings)."""
+        self._active_mode = "custom"
         dpg.bind_item_theme("mode_custom", self._th_primary)
         dpg.bind_item_theme("mode_recommended", self._th_secondary)
-        self._set_status("Custom mode")
+        # Show all sections
+        if dpg.does_item_exist("sec_advanced"):
+            dpg.configure_item("sec_advanced", show=True)
+        if dpg.does_item_exist("sec_params"):
+            dpg.configure_item("sec_params", default_open=True)
+        self._set_status("Custom mode — all parameters visible")
 
     def _cmd_show_plate_settings(self, sender=None, app_data=None) -> None:
         if dpg.does_item_exist("plate_popup"):
