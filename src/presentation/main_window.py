@@ -28,6 +28,7 @@ from __future__ import annotations
 import os
 import time
 import threading
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -81,6 +82,13 @@ class SlicerGUI:
         self._active_tool = "move"
         self._right_panel_visible = True
         self._slice_progress = 0.0
+        self._current_dir = Path.home()
+        self._nav_history: list[Path] = [self._current_dir]
+        self._nav_index = 0
+        self._file_dialog_dir_tag = "file_dialog_dir_entries"
+        self._file_dialog_file_tag = "file_dialog_file_entries"
+        self._file_dialog_path_tag = "file_dialog_path"
+        self._file_dialog_status_tag = "file_dialog_status"
 
     # =====================================================================
     #  Entry point
@@ -430,20 +438,72 @@ class SlicerGUI:
             dpg.add_text("Ready", tag="status_text", color=C.TEXT_SECONDARY)
 
     # -----------------------------------------------------------------
-    #  FILE DIALOG
+    #  CUSTOM FILE DIALOG
     # -----------------------------------------------------------------
     def _build_file_dialog(self) -> None:
-        with dpg.file_dialog(
-            directory_selector=False, show=False,
-            callback=self._on_file_selected,
-            cancel_callback=lambda: None,
-            tag="file_dialog", width=750, height=450,
+        with dpg.window(
+            label="Import Models",
+            tag="file_dialog_win",
+            width=900,
+            height=540,
+            show=False,
+            modal=True,
+            no_resize=True,
+            no_collapse=True,
+            pos=(Layout.WIN_W // 2 - 450, Layout.WIN_H // 2 - 270),
         ):
-            dpg.add_file_extension(".stl", color=(0, 255, 0, 255))
-            dpg.add_file_extension(".3mf", color=(0, 200, 255, 255))
-            dpg.add_file_extension(".obj", color=(255, 255, 0, 255))
-            dpg.add_file_extension(".amf", color=(255, 128, 0, 255))
-            dpg.add_file_extension("",     color=(180, 180, 180, 255))
+            dpg.add_separator()
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="⟵ Back", callback=lambda: self._navigate_history(-1))
+                dpg.add_button(label="Forward ⟶", callback=lambda: self._navigate_history(1))
+                dpg.add_button(label="↑ Up", callback=self._cmd_navigate_up)
+                dpg.add_input_text(
+                    tag=self._file_dialog_path_tag,
+                    width=520,
+                    default_value=str(self._current_dir),
+                    on_enter=True,
+                    callback=self._cmd_enter_path,
+                )
+                dpg.add_button(label="Go", callback=self._cmd_enter_path)
+            dpg.add_separator()
+
+            with dpg.group(horizontal=True):
+                # Left column: quick links + folder list
+                with dpg.child_window(
+                    width=260, border=True, autosize_y=False, height=390,
+                    tag="file_dialog_left", no_scrollbar=False,
+                ):
+                    dpg.add_text("Quick Access", color=C.TEXT_SECONDARY)
+                    for label, path in self._quick_links():
+                        btn = dpg.add_button(
+                            label=f"{label}",
+                            callback=self._on_quick_link_click,
+                            user_data=str(path),
+                            tag=f"quick_{label.lower().replace(' ', '_')}",
+                        )
+                        dpg.bind_item_theme(btn, self._th_cta)
+                    dpg.add_separator()
+                    dpg.add_text("Folders", color=C.ACCENT)
+                    with dpg.group(tag=self._file_dialog_dir_tag):
+                        pass
+
+                # Right column: file listing
+                with dpg.child_window(
+                    width=600, height=390, border=True, autosize_y=False,
+                    tag="file_dialog_right", no_scrollbar=False,
+                ):
+                    dpg.add_text("Files", color=C.ACCENT)
+                    dpg.add_text("Click any file to import it into the build plate.", color=C.TEXT_SECONDARY)
+                    dpg.add_separator()
+                    with dpg.group(tag=self._file_dialog_file_tag):
+                        pass
+
+            dpg.add_separator()
+            with dpg.group(horizontal=True):
+                dpg.add_text("Status:", color=C.TEXT_SECONDARY)
+                dpg.add_text("Ready to browse", tag=self._file_dialog_status_tag)
+                dpg.add_spacer(width=34)
+                dpg.add_button(label="Close", callback=lambda: dpg.hide_item("file_dialog_win"))
 
     # =====================================================================
     #  Handlers
@@ -525,7 +585,8 @@ class SlicerGUI:
     #  COMMANDS
     # =====================================================================
     def _cmd_import(self, sender=None, app_data=None) -> None:
-        dpg.show_item("file_dialog")
+        self._refresh_file_dialog()
+        dpg.show_item("file_dialog_win")
 
     def _cmd_duplicate(self, sender=None, app_data=None) -> None:
         obj = self.scene.duplicate_selected()
@@ -729,35 +790,181 @@ class SlicerGUI:
         threading.Thread(target=_worker, daemon=True).start()
 
     # =====================================================================
-    #  File dialog callback
+    #  File dialog helpers
     # =====================================================================
-    def _on_file_selected(self, sender, app_data) -> None:
-        selections = app_data.get("selections", {})
-        if not selections:
+    def _refresh_file_dialog(self) -> None:
+        if dpg.does_item_exist(self._file_dialog_path_tag):
+            dpg.set_value(self._file_dialog_path_tag, str(self._current_dir))
+        if dpg.does_item_exist(self._file_dialog_status_tag):
+            dpg.set_value(self._file_dialog_status_tag, f"Browsing {self._current_dir}")
+        self._refresh_dir_panel()
+        self._refresh_file_panel()
+
+    def _refresh_dir_panel(self) -> None:
+        if not dpg.does_item_exist(self._file_dialog_dir_tag):
+            return
+        self._clear_container(self._file_dialog_dir_tag)
+        directories = self._list_directories(self._current_dir)
+        if not directories:
+            dpg.add_text("No folders", parent=self._file_dialog_dir_tag, color=C.TEXT_SECONDARY)
+            return
+        for entry in directories:
+            btn = dpg.add_button(
+                label=f"📁  {entry.name}",
+                parent=self._file_dialog_dir_tag,
+                callback=self._on_dir_selected,
+                user_data=str(entry),
+                width=-1,
+            )
+            dpg.bind_item_theme(btn, self._th_flat)
+
+    def _refresh_file_panel(self) -> None:
+        if not dpg.does_item_exist(self._file_dialog_file_tag):
+            return
+        self._clear_container(self._file_dialog_file_tag)
+        files = self._list_files(self._current_dir)
+        if not files:
+            dpg.add_text("No supported files", parent=self._file_dialog_file_tag, color=C.TEXT_SECONDARY)
+            return
+        for sample in files:
+            size_kb = sample.stat().st_size / 1024
+            mod_time = time.strftime("%Y-%m-%d %H:%M", time.localtime(sample.stat().st_mtime))
+            with dpg.group(parent=self._file_dialog_file_tag):
+                file_btn = dpg.add_button(
+                    label=f"📦  {sample.name}",
+                    width=-1,
+                    height=34,
+                    callback=self._load_asset_file,
+                    user_data=str(sample),
+                )
+                dpg.bind_item_theme(file_btn, self._th_flat)
+                with dpg.tooltip(file_btn):
+                    dpg.add_text(str(sample), color=C.TEXT_SECONDARY)
+                    dpg.add_text(f"Size: {size_kb:.1f} KB", color=C.TEXT_SECONDARY)
+                    dpg.add_text(f"Modified: {mod_time}", color=C.TEXT_SECONDARY)
+                dpg.add_text(f"Size: {size_kb:.1f} KB  ·  Modified: {mod_time}", color=C.TEXT_SECONDARY)
+                dpg.add_separator()
+
+    def _clear_container(self, tag: str) -> None:
+        if not dpg.does_item_exist(tag):
+            return
+        children = dpg.get_item_children(tag)
+        if not children:
+            return
+        # DPG returns (slot_count, [child_ids])
+        child_list = children[1] if isinstance(children, tuple) and len(children) > 1 else []
+        if not child_list:
+            return
+        for child in child_list:
+            if dpg.does_item_exist(child):
+                dpg.delete_item(child)
+
+    def _list_directories(self, root: Path) -> list[Path]:
+        dirs = []
+        try:
+            for item in root.iterdir():
+                if item.is_dir():
+                    dirs.append(item)
+        except PermissionError:
+            return []
+        return sorted(dirs, key=lambda p: p.name.lower())[:30]
+
+    def _list_files(self, root: Path) -> list[Path]:
+        allowed = {".stl", ".3mf", ".obj", ".amf"}
+        files = []
+        try:
+            for item in root.iterdir():
+                if item.is_file() and item.suffix.lower() in allowed:
+                    files.append(item)
+        except PermissionError:
+            return []
+        return sorted(files, key=lambda p: p.name.lower())[:32]
+
+    def _navigate_to(self, target: Path, record: bool = True) -> None:
+        target = target.expanduser()
+        if not target.exists() or not target.is_dir():
+            self._set_status(f"Cannot access {target}")
+            return
+        self._current_dir = target
+        if record:
+            self._record_history(target)
+        self._refresh_file_dialog()
+
+    def _record_history(self, target: Path) -> None:
+        if self._nav_history and self._nav_history[self._nav_index] == target:
+            return
+        self._nav_history = self._nav_history[: self._nav_index + 1]
+        self._nav_history.append(target)
+        self._nav_index = len(self._nav_history) - 1
+
+    def _navigate_history(self, delta: int) -> None:
+        idx = self._nav_index + delta
+        if idx < 0 or idx >= len(self._nav_history):
+            return
+        self._nav_index = idx
+        self._current_dir = self._nav_history[idx]
+        self._refresh_file_dialog()
+
+    def _cmd_enter_path(self, sender=None, app_data=None, user_data=None) -> None:
+        text = dpg.get_value(self._file_dialog_path_tag)
+        if not text:
+            return
+        path = Path(text)
+        self._navigate_to(path)
+
+    def _cmd_navigate_up(self, sender=None, app_data=None, user_data=None) -> None:
+        parent = self._current_dir.parent
+        if parent and parent != self._current_dir:
+            self._navigate_to(parent)
+
+    def _on_dir_selected(self, sender, app_data, user_data) -> None:
+        self._navigate_to(Path(user_data))
+
+    def _on_quick_link_click(self, sender, app_data, user_data) -> None:
+        self._navigate_to(Path(user_data))
+
+    def _load_asset_file(self, sender, app_data, user_data) -> None:
+        file_path = Path(user_data)
+        if not file_path.exists():
+            self._set_status(f"File removed: {file_path.name}")
+            return
+        self._set_status(f"Loading {file_path.name} ...")
+        try:
+            name, mesh = self.loader.load(str(file_path))
+        except AssetLoadError as exc:
+            self._set_status(f"Load error: {exc}")
+            dpg.set_value("info_text", str(exc))
             return
 
-        for file_name, file_path in selections.items():
-            self._set_status(f"Loading {os.path.basename(file_path)} ...")
-            try:
-                name, mesh = self.loader.load(file_path)
-            except AssetLoadError as exc:
-                self._set_status(f"Load error: {exc}")
-                dpg.set_value("info_text", str(exc))
-                continue
-
-            self.scene.add_mesh(name, mesh)
-            info = (
-                f"Loaded: {name}\n"
-                f"Vertices : {mesh.vertices.shape[0]:,}\n"
-                f"Faces    : {mesh.faces.shape[0]:,}\n"
-                f"Size     : {mesh.extents.round(2)} mm"
-            )
-            dpg.set_value("info_text", info)
-            self._set_status(
-                f"Imported {name} ({mesh.faces.shape[0]:,} triangles)"
-            )
-
+        self.scene.add_mesh(name, mesh)
+        info = (
+            f"Loaded: {name}\n"
+            f"Vertices : {mesh.vertices.shape[0]:,}\n"
+            f"Faces    : {mesh.faces.shape[0]:,}\n"
+            f"Size     : {mesh.extents.round(2)} mm"
+        )
+        dpg.set_value("info_text", info)
+        self._set_status(
+            f"Imported {name} ({mesh.faces.shape[0]:,} triangles)"
+        )
         self._refresh_all()
+
+    def _quick_links(self) -> list[tuple[str, Path]]:
+        home = Path.home()
+        links = []
+        candidates = [
+            ("Home", home),
+            ("Desktop", home / "Desktop"),
+            ("Documents", home / "Documents"),
+            ("Downloads", home / "Downloads"),
+        ]
+        for label, path in candidates:
+            if path.exists():
+                links.append((label, path))
+        if os.name == "nt":
+            roots = [Path(f"{chr(letter)}:/") for letter in range(67, 70)]
+            links.extend((f"Drive {root.drive}", root) for root in roots if root.exists())
+        return links
 
     # =====================================================================
     #  Sidebar sync
