@@ -1,0 +1,3 @@
+[submodule "external/pyslm"]
+	path = external/pyslm
+	url = https://github.com/drlukeparry/pyslm.git
