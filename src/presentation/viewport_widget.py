@@ -59,7 +59,12 @@ class SLMViewport(QtInteractor):
         self._reset_camera()
         
         # Enable picking (callback receives picked actor)
-        self.enable_block_picking(callback=self._on_surface_picked)
+        try:
+            self.enable_block_picking(callback=self._on_surface_picked)
+        except Exception as e:
+            print(f"Warning: Could not enable picking: {e}")
+            # Fallback: use mouse press event
+            self.interactor.AddObserver("LeftButtonPressEvent", self._on_mouse_press)
     
     def _create_build_plate(self) -> None:
         """Create and add the cylindrical build plate to the scene."""
@@ -173,6 +178,26 @@ class SLMViewport(QtInteractor):
                 # Emit signal to notify GUI
                 self.object_selected.emit(uid)
                 break
+    
+    def _on_mouse_press(self, obj, event) -> None:
+        """Fallback picking using mouse press event."""
+        try:
+            # Get click position
+            click_pos = self.interactor.GetEventPosition()
+            
+            # Pick from renderer
+            picker = self.picker or pv.Picker()
+            picker.Pick(click_pos[0], click_pos[1], 0, self.renderer)
+            
+            picked_actor = picker.GetActor()
+            if picked_actor:
+                # Find which object was picked
+                for uid, actor in self._mesh_actors.items():
+                    if actor == picked_actor:
+                        self.object_selected.emit(uid)
+                        break
+        except Exception as e:
+            print(f"Mouse pick error: {e}")
     
     def highlight_selected(self, uid: Optional[str]) -> None:
         """
