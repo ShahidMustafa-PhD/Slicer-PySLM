@@ -507,6 +507,8 @@ class SlicerGUI(QMainWindow):
             self._tool_group.addButton(btn, tid)
             lay.addWidget(btn, alignment=Qt.AlignHCenter)
 
+        self._tool_group.idClicked.connect(self._on_tool_changed)
+
         lay.addStretch()
 
         # --- Camera presets (bottom of toolbar) ---
@@ -1006,6 +1008,19 @@ class SlicerGUI(QMainWindow):
             self.status_bar.showMessage("Preview stage (layer view)", 3000)
         else:
             self.status_bar.showMessage("Prepare stage", 3000)
+
+    @Slot(int)
+    def _on_tool_changed(self, tool_id: int) -> None:
+        if hasattr(self, "viewport"):
+            self.viewport.set_tool(tool_id)
+            names = {
+                0: "Move Tool active \u2014 Drag object to move on XY plane",
+                1: "Scale Tool active \u2014 Drag vertically to scale",
+                2: "Rotate Tool active \u2014 Drag horizontally to rotate",
+                3: "Mirror Tool \u2014 (Select axis in mirror menu)",
+            }
+            msg = names.get(tool_id, f"Tool {tool_id}")
+            self.status_bar.showMessage(msg, 4000)
 
     # ==================================================================
     #  Slots  --  Slicing
