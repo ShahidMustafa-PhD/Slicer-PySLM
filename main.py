@@ -14,6 +14,8 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+from PySide6.QtWidgets import QApplication
+
 from src.application.scene_manager import SceneManager
 from src.application.slicer_service import SlicerService
 from src.infrastructure.repositories.asset_loader import AssetLoader
@@ -21,6 +23,10 @@ from src.presentation.main_window import SlicerGUI
 
 
 def main() -> None:
+    # ------------------------------------------------------------------
+    # 0.  Qt Application instance (required for PySide6)
+    # ------------------------------------------------------------------
+    app = QApplication(sys.argv)
     # ------------------------------------------------------------------
     # 1.  Infrastructure layer  (adapters, repositories)
     # ------------------------------------------------------------------
@@ -50,8 +56,13 @@ def main() -> None:
         asset_loader=asset_loader,
     )
 
-    print(f"[Startup] Launching {gui.__class__.__name__}...")
+    print(f"[Startup] Launching {gui.__class__.__name__} with PySide6...")
     gui.run()
+    
+    # ------------------------------------------------------------------
+    # 4.  Enter Qt event loop
+    # ------------------------------------------------------------------
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
