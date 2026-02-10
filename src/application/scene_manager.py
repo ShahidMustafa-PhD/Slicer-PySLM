@@ -100,7 +100,7 @@ class SceneObject:
 class BuildPlate:
     """Cylindrical SLM build plate (default: EOS M290-style 120 mm dia)."""
     diameter_mm: float = 120.0
-    height_mm: float = 20.0
+    height_mm: float = 10.0
     origin: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=np.float64))
 
     @property
