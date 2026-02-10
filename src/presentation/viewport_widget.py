@@ -40,26 +40,16 @@ class SLMViewport(QtInteractor):
 
     object_selected = Signal(str)
 
-    # Tool Constants
-    TOOL_MOVE = 0
-    TOOL_SCALE = 1
-    TOOL_ROTATE = 2
-    TOOL_MIRROR = 3
-
+    # Tool Constants (Legacy constants removed - using Gizmo)
+    
     def __init__(self, scene: "SceneManager", parent=None):
         super().__init__(parent)
         self.scene = scene
         self._mesh_actors: Dict[str, object] = {}
         self._plate_actors: List[object] = []
+        self._selected_actor = None
+        self._selected_uid: Optional[str] = None
         self._ready = False
-
-        # Interaction state
-        self._current_tool: Optional[int] = None
-        self._drag_active = False
-        self._drag_start_pos = QPoint()
-        self._drag_obj_uid: Optional[str] = None
-        self._drag_initial_transform = None  # (translation, rotation, scale)
-        self._drag_plane_point: Optional[np.ndarray] = None  # for Move tool
 
         # Renderer defaults
         try:
@@ -67,6 +57,15 @@ class SLMViewport(QtInteractor):
         except AttributeError:
             pass
         self.set_background("#EAEAEA", top="#CFCFCF")
+
+        # Enable selection
+        self.enable_mesh_picking(
+            callback=self._on_object_picked,
+            use_actor=True,
+            show=False,
+            show_message=False,
+            left_clicking=True
+        )
 
         # Post-construction init (avoids VTK race conditions with Qt)
         QTimer.singleShot(0, self._deferred_init)
@@ -83,14 +82,8 @@ class SLMViewport(QtInteractor):
         except Exception:
             pass
 
-    # ------------------------------------------------------------------
-    #  Tool Mode
-    # ------------------------------------------------------------------
-
     def set_tool(self, tool_id: int) -> None:
-        """Set the active interaction tool (Move, Rotate, etc.)."""
-        self._current_tool = tool_id
-        # We could add visual cursors here later
+        pass  # Legacy tool system hooks can be ignored or used for other logic
 
     # ------------------------------------------------------------------
     #  Build Plate  (120 mm dia, 10 mm tall, top at Z = 0)
